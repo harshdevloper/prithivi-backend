@@ -3,7 +3,6 @@ import type { Worker } from "bullmq";
 import type { MulticastMessage } from "firebase-admin/messaging";
 import { createWorker } from "../utils/queue.js";
 import {
-  BROADCAST_TOPIC,
   NOTIFICATIONS_QUEUE,
   type NotificationJob,
 } from "../modules/notifications/queues/notification.queue.js";
@@ -77,18 +76,13 @@ const inboxData = (job: NotificationJob) => ({
   data: (job.data ?? undefined) as Prisma.InputJsonValue | undefined,
 });
 
-/** Push to one user's registered devices; prunes tokens FCM reports as dead. */
-const pushToUser = async (
+/** Multicast to a token list; prunes tokens FCM reports as dead. */
+const pushToTokens = async (
   app: FastifyInstance,
   job: NotificationJob,
+  devices: { token: string }[],
 ): Promise<{ success: number; failure: number }> => {
-  if (!app.firebaseMessaging || !job.userId) return { success: 0, failure: 0 };
-
-  const devices = await app.prisma.deviceToken.findMany({
-    where: { userId: job.userId },
-    select: { token: true },
-  });
-  if (devices.length === 0) return { success: 0, failure: 0 };
+  if (!app.firebaseMessaging || devices.length === 0) return { success: 0, failure: 0 };
 
   const base = buildMessageBase(job);
   let success = 0;
@@ -113,8 +107,25 @@ const pushToUser = async (
     }
   }
 
-  app.log.info({ userId: job.userId, sent: success, failed: failure }, "push sent to user devices");
   return { success, failure };
+};
+
+/** Push to one user's registered devices. */
+const pushToUser = async (
+  app: FastifyInstance,
+  job: NotificationJob,
+): Promise<{ success: number; failure: number }> => {
+  if (!job.userId) return { success: 0, failure: 0 };
+  const devices = await app.prisma.deviceToken.findMany({
+    where: { userId: job.userId },
+    select: { token: true },
+  });
+  const outcome = await pushToTokens(app, job, devices);
+  app.log.info(
+    { userId: job.userId, sent: outcome.success, failed: outcome.failure },
+    "push sent to user devices",
+  );
+  return outcome;
 };
 
 /**
@@ -184,13 +195,17 @@ export const startWorkers = (app: FastifyInstance): Worker[] => {
         users = rows.length;
       }
 
-      // 2) One FCM topic message reaches every subscribed device.
-      if (app.firebaseMessaging) {
-        await app.firebaseMessaging.send({ topic: BROADCAST_TOPIC, ...buildMessageBase(payload) });
-      }
-      // success = inbox rows written; push delivery via topic has no counts.
-      await recordOutcome(app, payload.pushLogId, { success: users, failure: 0 });
-      app.log.info({ users, type: payload.type }, "broadcast delivered");
+      // 2) Direct multicast to every registered device. Topic broadcasts
+      //    depend on each phone's fragile subscription state (lost on
+      //    reinstall until the next app open); token multicast is exactly as
+      //    reliable as single-user sends and reports real delivery counts.
+      const devices = await app.prisma.deviceToken.findMany({ select: { token: true } });
+      const outcome = await pushToTokens(app, payload, devices);
+      await recordOutcome(app, payload.pushLogId, outcome);
+      app.log.info(
+        { users, devices: devices.length, sent: outcome.success, failed: outcome.failure },
+        "broadcast delivered",
+      );
       return;
     }
 

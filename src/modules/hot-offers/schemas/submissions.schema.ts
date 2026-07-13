@@ -9,11 +9,19 @@ const submissionStatus = z.enum([
   "CANCELLED",
 ]);
 
-export const submitProofSchema = z.object({
-  offerId: z.string().uuid(),
-  screenshotUrl: z.string().url().max(2048),
-  note: z.string().max(1000).optional(),
-});
+export const submitProofSchema = z
+  .object({
+    offerId: z.string().uuid(),
+    // Legacy single-screenshot clients still send screenshotUrl; newer clients
+    // send screenshotUrls (1..5). At least one of the two is required.
+    screenshotUrl: z.string().url().max(2048).optional(),
+    screenshotUrls: z.array(z.string().url().max(2048)).min(1).max(5).optional(),
+    note: z.string().max(1000).optional(),
+  })
+  .refine((input) => Boolean(input.screenshotUrl) || Boolean(input.screenshotUrls?.length), {
+    message: "screenshotUrl or screenshotUrls is required",
+    path: ["screenshotUrls"],
+  });
 export type SubmitProofInput = z.infer<typeof submitProofSchema>;
 
 export const reviewSubmissionSchema = z.object({
@@ -26,6 +34,8 @@ export const listSubmissionsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
   status: submissionStatus.optional(),
+  // Admin-only: filter by the submission's offer.isProduct. Omitted = unfiltered.
+  product: z.enum(["true", "false"]).optional(),
 });
 export type ListSubmissionsQuery = z.infer<typeof listSubmissionsQuerySchema>;
 
@@ -56,6 +66,8 @@ export const submissionSchema = z.object({
   offerSlug: z.string(),
   offerThumbnailUrl: z.string().nullable(),
   screenshotUrl: z.string(),
+  // Every proof image, newest first (a resubmit's images lead the array).
+  screenshotUrls: z.array(z.string()),
   note: z.string().nullable(),
   status: submissionStatus,
   reviewNote: z.string().nullable(),
@@ -69,6 +81,7 @@ export type SubmissionDto = z.infer<typeof submissionSchema>;
 
 export type SubmissionWithRelations = OfferSubmission & {
   offer: Pick<Offer, "title" | "slug" | "thumbnailUrl">;
+  images: { url: string }[];
   user?: Pick<User, "id" | "name" | "email">;
 };
 
@@ -82,6 +95,7 @@ export const toSubmissionDto = (
   offerSlug: submission.offer.slug,
   offerThumbnailUrl: submission.offer.thumbnailUrl,
   screenshotUrl: submission.screenshotUrl,
+  screenshotUrls: submission.images.map((image) => image.url),
   note: submission.note,
   status: submission.status,
   reviewNote: submission.reviewNote,

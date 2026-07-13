@@ -20,6 +20,8 @@ import type {
 
 const SUBMISSION_OFFER_SELECT = {
   offer: { select: { title: true, slug: true, thumbnailUrl: true } },
+  // Every proof image newest-first, so a resubmit's images lead the array.
+  images: { select: { url: true }, orderBy: { createdAt: "desc" as const } },
 } as const;
 
 const CATEGORY_INCLUDE = {
@@ -102,26 +104,26 @@ export class HotOffersRepository {
   findFeedbackPageByCategorySlug(
     slug: string,
     publishedOnly: boolean,
-  ): Promise<(FeedbackPage & { category: { slug: string; title: string } }) | null> {
+  ): Promise<(FeedbackPage & { category: { slug: string; title: string; imageUrl: string | null } }) | null> {
     return this.prisma.feedbackPage.findFirst({
       where: {
         deletedAt: null,
         ...(publishedOnly ? { status: "PUBLISHED" } : {}),
         category: { slug, deletedAt: null },
       },
-      include: { category: { select: { slug: true, title: true } } },
+      include: { category: { select: { slug: true, title: true, imageUrl: true } } },
     });
   }
 
   upsertFeedbackPage(
     categoryId: string,
     data: Omit<Prisma.FeedbackPageUncheckedCreateInput, "categoryId">,
-  ): Promise<FeedbackPage & { category: { slug: string; title: string } }> {
+  ): Promise<FeedbackPage & { category: { slug: string; title: string; imageUrl: string | null } }> {
     return this.prisma.feedbackPage.upsert({
       where: { categoryId },
       create: { categoryId, ...data },
       update: data,
-      include: { category: { select: { slug: true, title: true } } },
+      include: { category: { select: { slug: true, title: true, imageUrl: true } } },
     });
   }
 
@@ -143,6 +145,7 @@ export class HotOffersRepository {
         : {}),
       ...(query.status && !params.publishedOnly ? { status: query.status } : {}),
       ...(query.category ? { category: { slug: query.category, deletedAt: null } } : {}),
+      ...(query.product !== undefined ? { isProduct: query.product === "true" } : {}),
       ...(query.search
         ? {
             OR: [
@@ -354,8 +357,12 @@ export class HotOffersRepository {
     skip: number;
     take: number;
     status?: SubmissionStatus;
+    isProduct?: boolean;
   }): Promise<[SubmissionWithRelations[], number]> {
-    const where: Prisma.OfferSubmissionWhereInput = params.status ? { status: params.status } : {};
+    const where: Prisma.OfferSubmissionWhereInput = {
+      ...(params.status ? { status: params.status } : {}),
+      ...(params.isProduct !== undefined ? { offer: { isProduct: params.isProduct } } : {}),
+    };
     return Promise.all([
       this.prisma.offerSubmission.findMany({
         where,
@@ -375,10 +382,7 @@ export class HotOffersRepository {
    * Approve a submission and credit the offer's reward to the user's wallet —
    * both must commit together, mirroring the campaign-claim approval flow.
    */
-  async approveSubmission(
-    id: string,
-    reviewerId: string,
-  ): Promise<SubmissionWithRelations> {
+  async approveSubmission(id: string, reviewerId: string): Promise<SubmissionWithRelations> {
     return this.prisma.$transaction(async (tx) => {
       const submission = await tx.offerSubmission.update({
         where: { id },
@@ -435,13 +439,13 @@ export class HotOffersRepository {
 
   // ---- fraud & duplicate protection (Module 4) ----
 
-  async createSubmissionImage(data: {
-    submissionId: string;
-    url: string;
-    hash: string;
-    byteSize: number;
-  }): Promise<void> {
-    await this.prisma.submissionImage.create({ data });
+  async createSubmissionImages(
+    submissionId: string,
+    images: { url: string; hash: string; byteSize: number }[],
+  ): Promise<void> {
+    await this.prisma.submissionImage.createMany({
+      data: images.map((image) => ({ submissionId, ...image })),
+    });
   }
 
   /** An image with this hash on someone else's active (PENDING/APPROVED)

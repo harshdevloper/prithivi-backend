@@ -9,7 +9,11 @@ import { analyticsRoutes } from "../modules/analytics/routes/analytics.routes.js
 import { adminRoutes } from "../modules/admin/routes/admin.routes.js";
 import { uploadsRoutes } from "../modules/uploads/routes/uploads.routes.js";
 import { hotOffersRoutes } from "../modules/hot-offers/routes/hot-offers.routes.js";
-import { settingsRoutes } from "../modules/settings/routes/settings.routes.js";
+import { settingsRoutes, publicConfigRoutes } from "../modules/settings/routes/settings.routes.js";
+import { redemptionsRoutes } from "../modules/redemptions/routes/redemptions.routes.js";
+import { appAssetsRoutes } from "../modules/app-assets/routes/app-assets.routes.js";
+import { missionsRoutes } from "../modules/missions/routes/missions.routes.js";
+import { gameRoutes } from "../modules/game/routes/game.routes.js";
 import { env } from "../config/env.js";
 
 export const registerRoutes = async (app: FastifyInstance): Promise<void> => {
@@ -46,6 +50,11 @@ export const registerRoutes = async (app: FastifyInstance): Promise<void> => {
       await api.register(uploadsRoutes, { prefix: "/uploads" });
       await api.register(hotOffersRoutes, { prefix: "/hot-offers" });
       await api.register(settingsRoutes, { prefix: "/settings" });
+      await api.register(publicConfigRoutes);
+      await api.register(redemptionsRoutes, { prefix: "/redemptions" });
+      await api.register(appAssetsRoutes, { prefix: "/app-assets" });
+      await api.register(missionsRoutes, { prefix: "/missions" });
+      await api.register(gameRoutes, { prefix: "/game" });
     },
     { prefix: env.API_PREFIX },
   );

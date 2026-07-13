@@ -6,6 +6,21 @@ import {
   type UpdateSettingsInput,
 } from "../schemas/settings.schema.js";
 
+/** Public, unauthenticated config for app/web clients. No prefix — GET /public-config. */
+export const publicConfigRoutes = async (app: FastifyInstance): Promise<void> => {
+  app.get(
+    "/public-config",
+    {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["settings"],
+        summary: "Public client config (no auth, cacheable)",
+      },
+    },
+    app.di.settingsController.publicConfig,
+  );
+};
+
 /** Reward-system settings — ADMIN reads, SUPER_ADMIN writes. Prefix /settings. */
 export const settingsRoutes = async (app: FastifyInstance): Promise<void> => {
   const controller = app.di.settingsController;

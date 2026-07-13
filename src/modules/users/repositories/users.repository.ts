@@ -1,4 +1,5 @@
-import type { Prisma, PrismaClient, Role, User } from "@prisma/client";
+import { Prisma, type PrismaClient, type Role, type User } from "@prisma/client";
+import { randomInt } from "node:crypto";
 
 export interface FirebaseProfile {
   firebaseUid: string;
@@ -6,6 +7,15 @@ export interface FirebaseProfile {
   name: string;
   avatarUrl?: string;
 }
+
+const REFERRAL_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+const generateReferralCode = (): string =>
+  Array.from({ length: 8 }, () => REFERRAL_ALPHABET[randomInt(REFERRAL_ALPHABET.length)]).join("");
+
+const isReferralCodeCollision = (error: unknown): boolean =>
+  error instanceof Prisma.PrismaClientKnownRequestError &&
+  error.code === "P2002" &&
+  String(error.meta?.target ?? "").includes("referralCode");
 
 export class UsersRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -18,7 +28,13 @@ export class UsersRepository {
     return this.prisma.user.findUnique({ where: { email } });
   }
 
-  async upsertFirebaseUser(profile: FirebaseProfile): Promise<User> {
+  findByReferralCode(code: string): Promise<User | null> {
+    return this.prisma.user.findFirst({
+      where: { referralCode: { equals: code, mode: "insensitive" } },
+    });
+  }
+
+  async upsertFirebaseUser(profile: FirebaseProfile): Promise<{ user: User; isNewUser: boolean }> {
     // Match an existing account by Firebase UID or by verified email, then link
     // the UID — so users who previously signed in via Google keep one account.
     const existing = await this.prisma.user.findFirst({
@@ -26,23 +42,34 @@ export class UsersRepository {
     });
 
     if (!existing) {
-      return this.prisma.user.create({
-        data: {
-          firebaseUid: profile.firebaseUid,
-          email: profile.email,
-          name: profile.name,
-          avatarUrl: profile.avatarUrl,
-        },
-      });
+      // Collision-retry on the unique referralCode (36^8 space, so ~never loops).
+      for (;;) {
+        try {
+          const user = await this.prisma.user.create({
+            data: {
+              firebaseUid: profile.firebaseUid,
+              email: profile.email,
+              name: profile.name,
+              avatarUrl: profile.avatarUrl,
+              referralCode: generateReferralCode(),
+            },
+          });
+          return { user, isNewUser: true };
+        } catch (error) {
+          if (!isReferralCodeCollision(error)) throw error;
+        }
+      }
     }
 
-    return this.prisma.user.update({
+    const user = await this.prisma.user.update({
       where: { id: existing.id },
       data: {
         firebaseUid: profile.firebaseUid,
         avatarUrl: profile.avatarUrl ?? existing.avatarUrl,
       },
     });
+    // A pre-created row (e.g. email-invited) that never signed in counts as new.
+    return { user, isNewUser: existing.firebaseUid === null };
   }
 
   update(id: string, data: Prisma.UserUpdateInput): Promise<User> {
@@ -80,5 +107,45 @@ export class UsersRepository {
 
   count(): Promise<number> {
     return this.prisma.user.count();
+  }
+
+  /** Users who applied a referral code, newest first, with their referrer. */
+  listReferrals(params: {
+    skip: number;
+    take: number;
+    search?: string;
+    from?: Date;
+    to?: Date;
+  }): Promise<[Array<User & { referredBy: User | null }>, number]> {
+    const where: Prisma.UserWhereInput = {
+      referredById: { not: null },
+      ...(params.from || params.to
+        ? {
+            referredAt: {
+              ...(params.from ? { gte: params.from } : {}),
+              ...(params.to ? { lte: params.to } : {}),
+            },
+          }
+        : {}),
+      ...(params.search
+        ? {
+            OR: [
+              { email: { contains: params.search, mode: "insensitive" } },
+              { referredBy: { email: { contains: params.search, mode: "insensitive" } } },
+            ],
+          }
+        : {}),
+    };
+
+    return Promise.all([
+      this.prisma.user.findMany({
+        where,
+        include: { referredBy: true },
+        skip: params.skip,
+        take: params.take,
+        orderBy: { referredAt: "desc" },
+      }),
+      this.prisma.user.count({ where }),
+    ]);
   }
 }

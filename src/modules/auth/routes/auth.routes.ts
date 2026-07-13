@@ -3,8 +3,10 @@ import { authGuard } from "../../../middleware/auth-guard.js";
 import {
   firebaseSignInSchema,
   refreshTokenSchema,
+  webCodeExchangeSchema,
   type FirebaseSignInInput,
   type RefreshTokenInput,
+  type WebCodeExchangeInput,
 } from "../schemas/auth.schema.js";
 
 export const authRoutes = async (app: FastifyInstance): Promise<void> => {
@@ -32,6 +34,33 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
       },
     },
     controller.refresh,
+  );
+
+  app.post(
+    "/web-code",
+    {
+      preHandler: [authGuard],
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["auth"],
+        summary: "Create a one-time code to open the website signed in (120s TTL)",
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    controller.createWebCode,
+  );
+
+  app.post<{ Body: WebCodeExchangeInput }>(
+    "/web-exchange",
+    {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["auth"],
+        summary: "Exchange a one-time web code for a JWT pair (single-use)",
+        body: webCodeExchangeSchema,
+      },
+    },
+    controller.exchangeWebCode,
   );
 
   app.post<{ Body: RefreshTokenInput }>(

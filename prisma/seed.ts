@@ -87,7 +87,7 @@ const seedHotOffers = async (): Promise<void> => {
       requirements: ["Android 10+", "New installs only"],
       terms: "One reward per user. Fraudulent installs are rejected.",
       rewardAmount: 50,
-      rewardLabel: "50 + 500 XP",
+      rewardLabel: "50 coins",
       estimatedTime: "10 min",
       rating: 4.5,
       playStoreUrl: "https://play.google.com/store/apps/details?id=com.example.puzzle",

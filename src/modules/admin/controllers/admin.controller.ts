@@ -3,6 +3,7 @@ import type { Role } from "@prisma/client";
 import { success } from "../../../common/response.js";
 import type { AdminService } from "../services/admin.service.js";
 import type {
+  ListReferralsQuery,
   ListUsersQuery,
   UpdateUserRoleInput,
   UpdateUserStatusInput,
@@ -22,6 +23,14 @@ export class AdminController {
     reply: FastifyReply,
   ): Promise<void> => {
     const { items, meta } = await this.adminService.listUsers(request.query);
+    reply.send(success(items, meta));
+  };
+
+  listReferrals = async (
+    request: FastifyRequest<{ Querystring: ListReferralsQuery }>,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    const { items, meta } = await this.adminService.listReferrals(request.query);
     reply.send(success(items, meta));
   };
 

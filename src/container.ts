@@ -10,6 +10,7 @@ import { NotificationsRepository } from "./modules/notifications/repositories/no
 import { AnalyticsRepository } from "./modules/analytics/repositories/analytics.repository.js";
 import { HotOffersRepository } from "./modules/hot-offers/repositories/hot-offers.repository.js";
 import { SettingsRepository } from "./modules/settings/repositories/settings.repository.js";
+import { RedemptionsRepository } from "./modules/redemptions/repositories/redemptions.repository.js";
 
 import { AuthService } from "./modules/auth/services/auth.service.js";
 import { UsersService } from "./modules/users/services/users.service.js";
@@ -22,6 +23,11 @@ import { AdminService } from "./modules/admin/services/admin.service.js";
 import { UploadsService } from "./modules/uploads/services/uploads.service.js";
 import { HotOffersService } from "./modules/hot-offers/services/hot-offers.service.js";
 import { SettingsService } from "./modules/settings/services/settings.service.js";
+import { RedemptionsService } from "./modules/redemptions/services/redemptions.service.js";
+import { ZuelPayProvider } from "./modules/redemptions/providers/zuelpay.provider.js";
+import { AppAssetsService } from "./modules/app-assets/services/app-assets.service.js";
+import { MissionsService } from "./modules/missions/services/missions.service.js";
+import { GameService } from "./modules/game/services/game.service.js";
 
 import { AuthController } from "./modules/auth/controllers/auth.controller.js";
 import { UsersController } from "./modules/users/controllers/users.controller.js";
@@ -34,6 +40,11 @@ import { AdminController } from "./modules/admin/controllers/admin.controller.js
 import { UploadsController } from "./modules/uploads/controllers/uploads.controller.js";
 import { HotOffersController } from "./modules/hot-offers/controllers/hot-offers.controller.js";
 import { SettingsController } from "./modules/settings/controllers/settings.controller.js";
+import { RedemptionsController } from "./modules/redemptions/controllers/redemptions.controller.js";
+import { AppAssetsController } from "./modules/app-assets/controllers/app-assets.controller.js";
+import { MissionsController } from "./modules/missions/controllers/missions.controller.js";
+import { GameController } from "./modules/game/controllers/game.controller.js";
+import { env } from "./config/env.js";
 
 import { createNotificationQueue } from "./modules/notifications/queues/notification.queue.js";
 import { createAnalyticsQueue } from "./modules/analytics/queues/analytics.queue.js";
@@ -55,6 +66,10 @@ export interface Container {
   uploadsService: UploadsService;
   hotOffersService: HotOffersService;
   settingsService: SettingsService;
+  redemptionsService: RedemptionsService;
+  appAssetsService: AppAssetsService;
+  missionsService: MissionsService;
+  gameService: GameService;
 
   // controllers
   authController: AuthController;
@@ -68,6 +83,10 @@ export interface Container {
   uploadsController: UploadsController;
   hotOffersController: HotOffersController;
   settingsController: SettingsController;
+  redemptionsController: RedemptionsController;
+  appAssetsController: AppAssetsController;
+  missionsController: MissionsController;
+  gameController: GameController;
 }
 
 declare module "fastify" {
@@ -93,6 +112,7 @@ export const buildContainer = (app: FastifyInstance): Container => {
   const analyticsRepository = new AnalyticsRepository(prisma);
   const hotOffersRepository = new HotOffersRepository(prisma);
   const settingsRepository = new SettingsRepository(prisma);
+  const redemptionsRepository = new RedemptionsRepository(prisma);
 
   // queues
   const notificationQueue = createNotificationQueue();
@@ -100,19 +120,32 @@ export const buildContainer = (app: FastifyInstance): Container => {
 
   // services
   const authService = new AuthService(app, usersRepository, refreshTokenRepository, walletRepository);
-  const usersService = new UsersService(usersRepository);
   const notificationsService = new NotificationsService(notificationsRepository, notificationQueue);
+  const settingsService = new SettingsService(settingsRepository);
+  const usersService = new UsersService(prisma, usersRepository, settingsService, notificationsService);
   const campaignService = new CampaignService(campaignRepository, notificationsService);
   const claimsService = new ClaimsService(prisma, claimsRepository, campaignRepository, notificationsService);
   const walletService = new WalletService(walletRepository);
   const analyticsService = new AnalyticsService(analyticsRepository, analyticsQueue);
   const uploadsService = new UploadsService();
-  const settingsService = new SettingsService(settingsRepository);
   const hotOffersService = new HotOffersService(
     hotOffersRepository,
     notificationsService,
     settingsService,
   );
+  // ZuelPay only when credentials exist — otherwise manual-fulfillment mode.
+  const voucherProvider = env.ZUELPAY_API_KEY
+    ? new ZuelPayProvider(env.ZUELPAY_BASE_URL, env.ZUELPAY_API_KEY, env.ZUELPAY_BRAND_ID)
+    : null;
+  const redemptionsService = new RedemptionsService(
+    redemptionsRepository,
+    settingsService,
+    notificationsService,
+    voucherProvider,
+  );
+  const appAssetsService = new AppAssetsService(prisma);
+  const missionsService = new MissionsService(prisma, notificationsService);
+  const gameService = new GameService(prisma, settingsService, notificationsService);
   const adminService = new AdminService(
     usersRepository,
     campaignRepository,
@@ -136,6 +169,10 @@ export const buildContainer = (app: FastifyInstance): Container => {
     uploadsService,
     hotOffersService,
     settingsService,
+    redemptionsService,
+    appAssetsService,
+    missionsService,
+    gameService,
 
     authController: new AuthController(authService),
     usersController: new UsersController(usersService),
@@ -148,5 +185,9 @@ export const buildContainer = (app: FastifyInstance): Container => {
     uploadsController: new UploadsController(uploadsService),
     hotOffersController: new HotOffersController(hotOffersService),
     settingsController: new SettingsController(settingsService),
+    redemptionsController: new RedemptionsController(redemptionsService),
+    appAssetsController: new AppAssetsController(appAssetsService),
+    missionsController: new MissionsController(missionsService),
+    gameController: new GameController(gameService),
   };
 };
