@@ -63,6 +63,12 @@ export class WalletRepository {
     ]);
   }
 
+  /** Ledger rows by reference key, e.g. "referral:<userId>". */
+  findByReferences(references: string[]): Promise<WalletTransaction[]> {
+    if (references.length === 0) return Promise.resolve([]);
+    return this.prisma.walletTransaction.findMany({ where: { reference: { in: references } } });
+  }
+
   totalBalance(): Promise<Prisma.Decimal | null> {
     return this.prisma.wallet
       .aggregate({ _sum: { balance: true } })

@@ -17,6 +17,21 @@ export const listUsersQuerySchema = z.object({
 });
 export type ListUsersQuery = z.infer<typeof listUsersQuerySchema>;
 
+export const listReferralsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  search: z.string().max(200).optional(),
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+});
+export type ListReferralsQuery = z.infer<typeof listReferralsQuerySchema>;
+
+export interface AdminReferralRow {
+  referred: { id: string; name: string; email: string; referredAt: string | null };
+  referrer: { id: string; name: string; email: string; referralCode: string | null } | null;
+  creditedPoints: number | null;
+}
+
 export const userIdParamsSchema = z.object({
   id: z.string().uuid(),
 });

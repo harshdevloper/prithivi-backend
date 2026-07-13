@@ -104,8 +104,15 @@ export class SettingsService {
         }
         return String(parsed);
       }
-      default:
-        return value.trim();
+      default: {
+        const trimmed = value.trim();
+        if (definition.enum && !definition.enum.includes(trimmed)) {
+          throw new BadRequestError(
+            `"${definition.key}" must be one of: ${definition.enum.join(", ")}`,
+          );
+        }
+        return trimmed;
+      }
     }
   }
 }

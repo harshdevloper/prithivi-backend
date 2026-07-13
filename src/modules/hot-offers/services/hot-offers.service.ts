@@ -251,6 +251,8 @@ export class HotOffersService {
       estimatedTime: input.estimatedTime ?? null,
       rating: input.rating ?? null,
       playStoreUrl: input.playStoreUrl,
+      isProduct: input.isProduct,
+      brandLogoUrl: input.brandLogoUrl ?? null,
       featured: input.featured,
       trending: input.trending,
       expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
@@ -264,9 +266,14 @@ export class HotOffersService {
 
   // ---- proof submissions ----
 
-  /** User submits (or re-submits) a screenshot for an offer. Runs the fraud &
-   *  cap guards, then records the submission and its image hash. */
+  /** User submits (or re-submits) 1..5 screenshots for an offer. Runs the
+   *  fraud & cap guards, then records the submission and every image hash.
+   *  Every screenshot is fetched, hashed and duplicate-checked BEFORE any DB
+   *  write — a rejection persists nothing. */
   async submitProof(userId: string, input: SubmitProofInput): Promise<SubmissionDto> {
+    // Back-compat: a lone screenshotUrl behaves as [screenshotUrl].
+    const urls = input.screenshotUrls?.length ? input.screenshotUrls : [input.screenshotUrl!];
+
     const offer = await this.repo.findOfferById(input.offerId);
     if (!offer || offer.status !== "PUBLISHED") throw new NotFoundError("Offer not found");
 
@@ -294,7 +301,7 @@ export class HotOffersService {
       }
     }
 
-    // ---- cap: dailyLimit (attempts for this offer today) ----
+    // ---- cap: dailyLimit (per-image, counts SubmissionImage rows today) ----
     if (offer.dailyLimit !== null) {
       const startOfDay = new Date();
       startOfDay.setHours(0, 0, 0, 0);
@@ -303,7 +310,7 @@ export class HotOffersService {
         offer.id,
         startOfDay,
       );
-      if (attemptsToday >= offer.dailyLimit) {
+      if (attemptsToday + urls.length > offer.dailyLimit) {
         await this.repo.createFraudLog({
           userId,
           submissionId: existing?.id ?? null,
@@ -315,54 +322,59 @@ export class HotOffersService {
       }
     }
 
-    // ---- server-side hash + duplicate-image detection ----
+    // ---- server-side hash + duplicate-image detection (every screenshot) ----
     const maxBytes = (await this.settings.getNumber("submission.maxImageSizeMb")) * 1024 * 1024;
-    let hashed: { hash: string; byteSize: number };
-    try {
-      hashed = await fetchAndHashImage(input.screenshotUrl, maxBytes);
-    } catch (error) {
-      throw new BadRequestError(
-        error instanceof Error && error.message.includes("size")
-          ? "Screenshot exceeds the maximum allowed size"
-          : "Could not read the uploaded screenshot — please try again",
-      );
-    }
-
-    if (await this.settings.getBoolean("fraud.rejectDuplicateImages")) {
-      const duplicate = await this.repo.findDuplicateImage(hashed.hash, existing?.id ?? null);
-      if (duplicate) {
-        await this.repo.createFraudLog({
-          userId,
-          submissionId: existing?.id ?? null,
-          type: "DUPLICATE_IMAGE",
-          score: 40,
-          detail: `Reused screenshot (matches submission ${duplicate.submissionId})`,
-        });
-        throw new ConflictError("This screenshot has already been used — upload a fresh one");
+    const hashed: { url: string; hash: string; byteSize: number }[] = [];
+    for (const url of urls) {
+      try {
+        hashed.push({ url, ...(await fetchAndHashImage(url, maxBytes)) });
+      } catch (error) {
+        throw new BadRequestError(
+          error instanceof Error && error.message.includes("size")
+            ? "A screenshot exceeds the maximum allowed size"
+            : "Could not read an uploaded screenshot — please try again",
+        );
       }
     }
 
-    // ---- persist submission + image record ----
+    if (await this.settings.getBoolean("fraud.rejectDuplicateImages")) {
+      const seen = new Set<string>();
+      for (const image of hashed) {
+        const duplicateOf = seen.has(image.hash)
+          ? "another screenshot in this submission"
+          : await this.repo
+              .findDuplicateImage(image.hash, existing?.id ?? null)
+              .then((dup) => (dup ? `submission ${dup.submissionId}` : null));
+        if (duplicateOf) {
+          await this.repo.createFraudLog({
+            userId,
+            submissionId: existing?.id ?? null,
+            type: "DUPLICATE_IMAGE",
+            score: 40,
+            detail: `Reused screenshot (matches ${duplicateOf})`,
+          });
+          throw new ConflictError("A screenshot has already been used — upload fresh ones");
+        }
+        seen.add(image.hash);
+      }
+    }
+
+    // ---- persist submission + one image record per screenshot ----
     const submission = existing
       ? await this.repo.resubmit(existing.id, {
-          screenshotUrl: input.screenshotUrl,
+          screenshotUrl: urls[0],
           note: input.note ?? null,
           rewardAmount: offer.rewardAmount,
         })
       : await this.repo.createSubmission({
           offerId: input.offerId,
           userId,
-          screenshotUrl: input.screenshotUrl,
+          screenshotUrl: urls[0],
           note: input.note ?? null,
           rewardAmount: offer.rewardAmount,
         });
 
-    await this.repo.createSubmissionImage({
-      submissionId: submission.id,
-      url: input.screenshotUrl,
-      hash: hashed.hash,
-      byteSize: hashed.byteSize,
-    });
+    await this.repo.createSubmissionImages(submission.id, hashed);
 
     // ---- log (don't block) excessive pending submissions ----
     const pending = await this.repo.countPendingByUser(userId);
@@ -377,7 +389,9 @@ export class HotOffersService {
       });
     }
 
-    return toSubmissionDto(submission);
+    // The images were appended after the submission row was written, so the
+    // in-memory relation is stale — respond with them included.
+    return toSubmissionDto({ ...submission, images: hashed.map(({ url }) => ({ url })).concat(submission.images) });
   }
 
   /** The caller's submission for a specific offer (or null) — drives the
@@ -420,6 +434,7 @@ export class HotOffersService {
       skip: (query.page - 1) * query.limit,
       take: query.limit,
       status: query.status,
+      isProduct: query.product === undefined ? undefined : query.product === "true",
     });
     return { items: items.map((s) => toSubmissionDto(s, true)), meta: buildMeta(query, total) };
   }

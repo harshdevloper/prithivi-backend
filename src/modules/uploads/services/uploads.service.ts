@@ -44,7 +44,8 @@ export class UploadsService {
         {
           folder: UPLOADS.CLOUDINARY_FOLDER,
           resource_type: "image",
-          transformation: [{ quality: "auto", fetch_format: "auto" }],
+          // No incoming transformation: it would re-encode the stored asset and
+          // flatten animated GIFs. quality/format tuning belongs at delivery time.
         },
         (error, result) => {
           if (error || !result) {

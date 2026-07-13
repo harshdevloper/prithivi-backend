@@ -8,7 +8,12 @@ import type { ClaimsRepository } from "../../claims/repositories/claims.reposito
 import type { WalletRepository } from "../../wallet/repositories/wallet.repository.js";
 import type { RefreshTokenRepository } from "../../auth/repositories/refresh-token.repository.js";
 import { toPublicUser, type PublicUser } from "../../users/schemas/users.schema.js";
-import type { AdminStats, ListUsersQuery } from "../schemas/admin.schema.js";
+import type {
+  AdminReferralRow,
+  AdminStats,
+  ListReferralsQuery,
+  ListUsersQuery,
+} from "../schemas/admin.schema.js";
 
 export class AdminService {
   constructor(
@@ -47,6 +52,43 @@ export class AdminService {
       role: query.role as Role | undefined,
     });
     return { items: users.map(toPublicUser), meta: buildMeta(pagination, total) };
+  }
+
+  async listReferrals(
+    query: ListReferralsQuery,
+  ): Promise<{ items: AdminReferralRow[]; meta: PageMeta }> {
+    const pagination: PaginationQuery = { page: query.page, limit: query.limit };
+    const [referred, total] = await this.users.listReferrals({
+      skip: (query.page - 1) * query.limit,
+      take: query.limit,
+      search: query.search,
+      from: query.from,
+      to: query.to,
+    });
+
+    // Credited points live in the referrer's ledger under "referral:<referredUserId>".
+    const txs = await this.wallets.findByReferences(referred.map((u) => `referral:${u.id}`));
+    const pointsByRef = new Map(txs.map((t) => [t.reference, t.amount.toNumber()]));
+
+    const items: AdminReferralRow[] = referred.map((u) => ({
+      referred: {
+        id: u.id,
+        name: u.name,
+        email: u.email,
+        referredAt: u.referredAt?.toISOString() ?? null,
+      },
+      referrer: u.referredBy
+        ? {
+            id: u.referredBy.id,
+            name: u.referredBy.name,
+            email: u.referredBy.email,
+            referralCode: u.referredBy.referralCode,
+          }
+        : null,
+      creditedPoints: pointsByRef.get(`referral:${u.id}`) ?? null,
+    }));
+
+    return { items, meta: buildMeta(pagination, total) };
   }
 
   async updateUserRole(actorRole: string, targetUserId: string, role: Role): Promise<PublicUser> {

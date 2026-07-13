@@ -48,6 +48,13 @@ const envSchema = z.object({
   RATE_LIMIT_MAX: z.coerce.number().default(100),
   RATE_LIMIT_WINDOW: z.string().default("1 minute"),
 
+  // ZuelPay gift-voucher provider (redemptions). Leave ZUELPAY_API_KEY unset
+  // to run redemptions in manual-fulfillment mode (admin enters codes).
+  ZUELPAY_BASE_URL: z.string().default("https://api.zuelpay.com/v2"),
+  ZUELPAY_API_KEY: z.string().optional(),
+  /** ZuelPay brand to issue vouchers for (their API requires a brand_id). */
+  ZUELPAY_BRAND_ID: z.string().default("AMAZON"),
+
   /** cloudinary://<api_key>:<api_secret>@<cloud_name> — falls back to local disk when unset. */
   CLOUDINARY_URL: z.string().optional(),
   UPLOADS_DIR: z.string().default("uploads"),

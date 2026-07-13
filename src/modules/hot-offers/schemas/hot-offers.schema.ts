@@ -81,6 +81,7 @@ export const feedbackPageSchema = z.object({
   categoryId: z.string().uuid(),
   categorySlug: z.string(),
   categoryTitle: z.string(),
+  categoryImageUrl: z.string().nullable(),
   bannerUrl: z.string().nullable(),
   title: z.string(),
   description: z.string(),
@@ -94,12 +95,13 @@ export const feedbackPageSchema = z.object({
 export type FeedbackPageDto = z.infer<typeof feedbackPageSchema>;
 
 export const toFeedbackPageDto = (
-  page: FeedbackPage & { category: { slug: string; title: string } },
+  page: FeedbackPage & { category: { slug: string; title: string; imageUrl: string | null } },
 ): FeedbackPageDto => ({
   id: page.id,
   categoryId: page.categoryId,
   categorySlug: page.category.slug,
   categoryTitle: page.category.title,
+  categoryImageUrl: page.category.imageUrl,
   bannerUrl: page.bannerUrl,
   title: page.title,
   description: page.description,
@@ -144,6 +146,8 @@ export const offerCardSchema = z.object({
   difficulty: difficultySchema,
   estimatedTime: z.string().nullable(),
   rating: z.number().nullable(),
+  isProduct: z.boolean(),
+  brandLogoUrl: z.string().nullable(),
   featured: z.boolean(),
   trending: z.boolean(),
   expiresAt: z.string().datetime().nullable(),
@@ -188,6 +192,8 @@ export const toOfferCardDto = (offer: OfferWithCategory): OfferCardDto => ({
   difficulty: offer.difficulty,
   estimatedTime: offer.estimatedTime,
   rating: offer.rating === null ? null : Number(offer.rating),
+  isProduct: offer.isProduct,
+  brandLogoUrl: offer.brandLogoUrl,
   featured: offer.featured,
   trending: offer.trending,
   expiresAt: offer.expiresAt?.toISOString() ?? null,
@@ -223,6 +229,8 @@ export const listOffersQuerySchema = z.object({
   category: slugSchema.optional(),
   search: z.string().max(120).optional(),
   sort: z.enum(["priority", "newest", "reward"]).default("priority"),
+  // Querystring booleans arrive as strings; omitted = unfiltered.
+  product: z.enum(["true", "false"]).optional(),
 });
 export type ListOffersQuery = z.infer<typeof listOffersQuerySchema>;
 
@@ -258,6 +266,8 @@ export const upsertOfferSchema = z.object({
     .url()
     .startsWith("https://play.google.com/", "Must be a Play Store URL")
     .max(2048),
+  isProduct: z.boolean().default(false),
+  brandLogoUrl: z.string().url().max(2048).optional().nullable(),
   featured: z.boolean().default(false),
   trending: z.boolean().default(false),
   expiresAt: z.string().datetime().optional().nullable(),

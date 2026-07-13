@@ -7,7 +7,7 @@ import type { RefreshTokenRepository } from "../repositories/refresh-token.repos
 import type { UsersRepository } from "../../users/repositories/users.repository.js";
 import type { WalletRepository } from "../../wallet/repositories/wallet.repository.js";
 import { toPublicUser, type PublicUser } from "../../users/schemas/users.schema.js";
-import type { AuthTokens } from "../schemas/auth.schema.js";
+import type { AuthTokens, FirebaseAuthResult } from "../schemas/auth.schema.js";
 
 export class AuthService {
   constructor(
@@ -22,7 +22,7 @@ export class AuthService {
    * provider) and sends the resulting Firebase ID token; we verify it with the
    * Admin SDK and mint our own app session (JWT + rotating refresh token).
    */
-  async signInWithFirebaseIdToken(idToken: string): Promise<AuthTokens> {
+  async signInWithFirebaseIdToken(idToken: string): Promise<FirebaseAuthResult> {
     if (!this.app.firebaseAuth) {
       throw new AppError("Firebase authentication is not configured", 503, "FIREBASE_NOT_CONFIGURED");
     }
@@ -38,7 +38,7 @@ export class AuthService {
       throw new UnauthorizedError("Firebase token is missing a verified email");
     }
 
-    const user = await this.users.upsertFirebaseUser({
+    const { user, isNewUser } = await this.users.upsertFirebaseUser({
       firebaseUid: decoded.uid,
       email: decoded.email,
       name: (decoded.name as string | undefined) ?? decoded.email.split("@")[0],
@@ -50,7 +50,7 @@ export class AuthService {
     }
 
     await this.wallets.ensureForUser(user.id);
-    return this.issueTokens(user);
+    return { ...(await this.issueTokens(user)), isNewUser };
   }
 
   async refresh(refreshToken: string): Promise<AuthTokens> {
@@ -77,6 +77,28 @@ export class AuthService {
 
   async logoutAll(userId: string): Promise<void> {
     await this.refreshTokens.revokeAllForUser(userId);
+  }
+
+  /** One-time code the app hands to the website to bootstrap a web session. */
+  async createWebCode(userId: string): Promise<{ code: string }> {
+    const code = generateOpaqueToken();
+    await this.app.redis.set(`webcode:${code}`, userId, "EX", 120);
+    return { code };
+  }
+
+  async exchangeWebCode(code: string): Promise<AuthTokens> {
+    // GETDEL makes the code single-use even under concurrent exchanges.
+    const userId = await this.app.redis.getdel(`webcode:${code}`);
+    if (!userId) {
+      throw new UnauthorizedError("Invalid or expired code");
+    }
+
+    const user = await this.users.findById(userId);
+    if (!user || !user.isActive) {
+      throw new UnauthorizedError("Invalid or expired code");
+    }
+
+    return this.issueTokens(user);
   }
 
   async me(userId: string): Promise<PublicUser> {

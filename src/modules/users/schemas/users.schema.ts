@@ -8,6 +8,8 @@ export const publicUserSchema = z.object({
   avatarUrl: z.string().nullable(),
   role: z.enum(["USER", "ADMIN", "SUPER_ADMIN"]),
   isActive: z.boolean(),
+  referralCode: z.string().nullable(),
+  hasAppliedReferral: z.boolean(),
   createdAt: z.string().datetime(),
 });
 
@@ -20,8 +22,19 @@ export const toPublicUser = (user: User): PublicUser => ({
   avatarUrl: user.avatarUrl,
   role: user.role,
   isActive: user.isActive,
+  referralCode: user.referralCode,
+  hasAppliedReferral: user.referredById !== null,
   createdAt: user.createdAt.toISOString(),
 });
+
+export interface ProgressDto {
+  coins: number; // lifetime coins earned (sum of wallet CREDITs)
+  level: number;
+  coinsInLevel: number;
+  coinsForLevel: number; // 0 = max level reached (table mode past last threshold)
+  rank: string;
+  nextRank: string | null;
+}
 
 export const updateProfileSchema = z.object({
   name: z.string().min(1).max(120).optional(),
@@ -29,3 +42,8 @@ export const updateProfileSchema = z.object({
 });
 
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
+
+export const applyReferralSchema = z.object({
+  code: z.string().trim().min(1).max(16),
+});
+export type ApplyReferralInput = z.infer<typeof applyReferralSchema>;

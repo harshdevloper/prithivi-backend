@@ -1,5 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "darwin-arm64"]
 }
 
 datasource db {
@@ -79,11 +80,28 @@ enum OfferDifficulty {
   HARD
 }
 
+/// Lifecycle of a coin-redemption request. APPROVED = awaiting voucher
+/// (manual mode or provider failure); FULFILLED = voucher delivered.
+enum RedemptionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  FULFILLED
+  FAILED
+}
+
 enum FraudEventType {
   DUPLICATE_IMAGE
   DAILY_LIMIT
   EXCESS_PENDING
   MANUAL
+}
+
+enum GameMatchStatus {
+  IN_PROGRESS
+  WON
+  LOST
+  DRAW
 }
 
 model User {
@@ -95,8 +113,14 @@ model User {
   firebaseUid String?  @unique
   role        Role     @default(USER)
   isActive  Boolean  @default(true)
+  referralCode String?   @unique
+  referredById String?
+  referredAt   DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  referredBy User?  @relation("Referrals", fields: [referredById], references: [id])
+  referrals  User[] @relation("Referrals")
 
   wallet          Wallet?
   refreshTokens   RefreshToken[]
@@ -110,6 +134,10 @@ model User {
   offerSubmissions    OfferSubmission[] @relation("OfferSubmissionUser")
   reviewedSubmissions OfferSubmission[] @relation("OfferSubmissionReviewer")
   fraudLogs           FraudLog[]
+  redemptions         Redemption[]      @relation("RedemptionUser")
+  reviewedRedemptions Redemption[]      @relation("RedemptionReviewer")
+  gameMatches         GameMatch[]
+  missionCompletions  MissionCompletion[]
 
   @@map("users")
 }
@@ -378,6 +406,8 @@ model Offer {
   estimatedTime    String? // e.g. "10 min"
   rating           Decimal?      @db.Decimal(2, 1) // admin-set display rating 0.0-5.0
   playStoreUrl     String
+  isProduct        Boolean       @default(false) // product offers surface on the app's Products tab
+  brandLogoUrl     String? // brand mark shown on product cards
   featured         Boolean       @default(false)
   trending         Boolean       @default(false)
   expiresAt        DateTime? // hidden from public lists after this moment
@@ -444,6 +474,33 @@ model SubmissionImage {
   @@map("submission_images")
 }
 
+/// A user's request to convert wallet coins into a gift voucher. Coins are
+/// debited up-front (refunded on rejection); the voucher is issued via the
+/// configured provider or entered manually by a super admin.
+model Redemption {
+  id           String           @id @default(uuid())
+  userId       String
+  coins        Decimal          @db.Decimal(12, 2) // amount debited from the wallet
+  status       RedemptionStatus @default(PENDING)
+  provider     String? // "zuelpay" | "manual"
+  voucherCode  String?
+  voucherUrl   String?
+  providerRef  String? // provider transaction id (e.g. ZuelPay txn_id)
+  note         String? // admin note set at review time
+  failReason   String? // last provider error (status APPROVED = queued for manual)
+  reviewedById String?
+  reviewedAt   DateTime?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  user       User  @relation("RedemptionUser", fields: [userId], references: [id], onDelete: Cascade)
+  reviewedBy User? @relation("RedemptionReviewer", fields: [reviewedById], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@map("redemptions")
+}
+
 /// A logged suspicious event contributing to a user's fraud score.
 model FraudLog {
   id           String         @id @default(uuid())
@@ -482,4 +539,71 @@ model OfferEvent {
   @@index([categoryId, type, createdAt])
   @@index([createdAt])
   @@map("offer_events")
+}
+
+/// One 3-piece tic-tac-toe match. `state` = { board, xOrder, oOrder, plies }.
+model GameMatch {
+  id           String          @id @default(uuid())
+  userId       String
+  state        Json
+  status       GameMatchStatus @default(IN_PROGRESS)
+  coinsAwarded Decimal?        @db.Decimal(12, 2)
+  difficulty   String
+  hintsEnabled Boolean         @default(false)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("game_matches")
+}
+
+model Mission {
+  id          String        @id @default(uuid())
+  title       String
+  description String
+  rewardCoins Decimal       @db.Decimal(12, 2)
+  status      ContentStatus @default(DRAFT)
+  sortOrder   Int           @default(0)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  deletedAt   DateTime?
+
+  completions MissionCompletion[]
+
+  @@index([status, sortOrder])
+  @@map("missions")
+}
+
+model MissionCompletion {
+  id           String      @id @default(uuid())
+  missionId    String
+  userId       String
+  status       ClaimStatus @default(PENDING)
+  note         String?
+  reviewedById String?
+  reviewedAt   DateTime?
+  createdAt    DateTime    @default(now())
+
+  mission Mission @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([missionId, userId])
+  @@index([userId])
+  @@index([status])
+  @@map("mission_completions")
+}
+
+/// Admin-overridable in-app graphic. Slot registry (keys, pages, labels)
+/// lives in code (src/modules/app-assets/registry.ts); the DB stores only overrides.
+model AppAsset {
+  id          String   @id @default(uuid())
+  slotKey     String   @unique
+  imageUrl    String
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("app_assets")
 }

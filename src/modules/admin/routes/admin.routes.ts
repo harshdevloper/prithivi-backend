@@ -2,10 +2,12 @@ import type { FastifyInstance } from "fastify";
 import { authGuard } from "../../../middleware/auth-guard.js";
 import { adminOnly } from "../../../middleware/role-guard.js";
 import {
+  listReferralsQuerySchema,
   listUsersQuerySchema,
   updateUserRoleSchema,
   updateUserStatusSchema,
   userIdParamsSchema,
+  type ListReferralsQuery,
   type ListUsersQuery,
   type UpdateUserRoleInput,
   type UpdateUserStatusInput,
@@ -42,6 +44,19 @@ export const adminRoutes = async (app: FastifyInstance): Promise<void> => {
       },
     },
     controller.listUsers,
+  );
+
+  app.get<{ Querystring: ListReferralsQuery }>(
+    "/referrals",
+    {
+      schema: {
+        tags: ["admin"],
+        summary: "List applied referrals",
+        security: [{ bearerAuth: [] }],
+        querystring: listReferralsQuerySchema,
+      },
+    },
+    controller.listReferrals,
   );
 
   app.patch<{ Params: UserIdParams; Body: UpdateUserRoleInput }>(

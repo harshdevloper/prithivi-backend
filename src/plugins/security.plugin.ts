@@ -22,6 +22,12 @@ export default fp(
           callback(null, true);
           return;
         }
+        // Dev: any localhost/127.0.0.1 port (admin 5173, web 5174, previews…).
+        // Exact-match allowlist stays enforced in production.
+        if (!isProduction && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+          callback(null, true);
+          return;
+        }
         callback(new Error("Not allowed by CORS"), false);
       },
       credentials: true,
