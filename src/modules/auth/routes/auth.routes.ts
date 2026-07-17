@@ -40,7 +40,9 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
     "/web-code",
     {
       preHandler: [authGuard],
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+      // Generous: the WebView handshake may mint several codes per page load
+      // on a slow network; the codes are cheap (in-memory, 120s TTL).
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["auth"],
         summary: "Create a one-time code to open the website signed in (120s TTL)",
