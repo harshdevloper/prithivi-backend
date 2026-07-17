@@ -14,7 +14,15 @@ import { UPLOADS } from "../config/constants.js";
  */
 export default fp(async (app: FastifyInstance) => {
   const root = path.resolve(process.cwd(), env.UPLOADS_DIR);
-  mkdirSync(root, { recursive: true });
+  try {
+    mkdirSync(root, { recursive: true });
+  } catch (error) {
+    // A bad UPLOADS_DIR (e.g. an unwritable production path pasted into the
+    // wrong env) must not take the whole API down — uploads just 404 until
+    // the path is fixed.
+    app.log.error({ err: error, root }, "uploads dir unavailable — /uploads disabled");
+    return;
+  }
 
   await app.register(fastifyStatic, {
     root,
