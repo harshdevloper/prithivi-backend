@@ -1,12 +1,11 @@
-import type { Queue } from "bullmq";
 import type { NotificationType } from "@prisma/client";
-import { createQueue } from "../../../utils/queue.js";
 
-export const NOTIFICATIONS_QUEUE = "notifications";
-
-/** FCM topic every app instance subscribes to for broadcasts. */
-export const BROADCAST_TOPIC = "all-users";
-
+/**
+ * Shape of one notification delivery. Kept at its historical path so the many
+ * business-service imports stay untouched; the BullMQ queue that used to live
+ * here was removed with the Redis dependency — delivery is now in-process via
+ * notification-dispatcher.ts.
+ */
 export interface NotificationJob {
   /**
    * "user" (default, needs userId), "all" for a broadcast to every active user,
@@ -27,15 +26,6 @@ export interface NotificationJob {
   data?: Record<string, string>;
   /** Data-only push: no banner, no inbox row; the app processes it silently. */
   silent?: boolean;
-  /** Set for admin sends — the worker records the delivery outcome on this row. */
+  /** Set for admin sends — delivery records the outcome on this row. */
   pushLogId?: string;
 }
-
-export const createNotificationQueue = (): Queue => createQueue(NOTIFICATIONS_QUEUE);
-
-export const DEFAULT_JOB_OPTIONS = {
-  attempts: 3,
-  backoff: { type: "exponential" as const, delay: 2_000 },
-  removeOnComplete: 1_000,
-  removeOnFail: 5_000,
-};

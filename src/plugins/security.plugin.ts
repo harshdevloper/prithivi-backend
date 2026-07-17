@@ -37,9 +37,8 @@ export default fp(
     await app.register(rateLimit, {
       max: env.RATE_LIMIT_MAX,
       timeWindow: env.RATE_LIMIT_WINDOW,
-      // Shared Redis store => limits hold across PM2 cluster instances.
-      redis: app.redis,
-      nameSpace: "rewardhub-rl:",
+      // ponytail: in-memory store — correct for a single instance; bring back
+      // a shared store only if the API ever runs multiple replicas.
     });
 
     // NOTE: app-level gzip is intentionally NOT enabled. @fastify/compress@9
@@ -49,6 +48,5 @@ export default fp(
     // spamming ERR_STREAM_PREMATURE_CLOSE. For a JSON API, compression belongs
     // at the reverse proxy / CDN (nginx gzip, Cloudflare, Fly) in production.
   },
-  // Runs after the redis plugin so the rate limiter can use the shared connection.
-  { name: "security", dependencies: ["redis"] },
+  { name: "security" },
 );

@@ -26,11 +26,10 @@ export const registerRoutes = async (app: FastifyInstance): Promise<void> => {
 
       api.get(
         "/health/ready",
-        { schema: { tags: ["admin"], summary: "Readiness probe (DB + Redis)" } },
+        { schema: { tags: ["admin"], summary: "Readiness probe (DB)" } },
         async (_request, reply) => {
           try {
             await api.prisma.$queryRaw`SELECT 1`;
-            await api.redis.ping();
             return { status: "ready" };
           } catch (error) {
             api.log.error(error, "readiness check failed");

@@ -1,270 +1,82 @@
 import type { FastifyInstance } from "fastify";
-import type { Worker } from "bullmq";
-import type { MulticastMessage } from "firebase-admin/messaging";
-import { createWorker } from "../utils/queue.js";
-import {
-  NOTIFICATIONS_QUEUE,
-  type NotificationJob,
-} from "../modules/notifications/queues/notification.queue.js";
-import { ANALYTICS_QUEUE, type AnalyticsJob } from "../modules/analytics/queues/analytics.queue.js";
-import { QUEUES } from "../config/constants.js";
-import type { AuditJob } from "../plugins/audit.plugin.js";
-import type { Prisma } from "@prisma/client";
+import type { PushLog } from "@prisma/client";
+import type { NotificationJob } from "../modules/notifications/queues/notification.queue.js";
+import { dispatchNotification } from "../modules/notifications/services/notification-dispatcher.js";
 
-/** Codes that mean the token is dead and should be pruned. */
-const STALE_TOKEN_CODES = new Set([
-  "messaging/registration-token-not-registered",
-  "messaging/invalid-registration-token",
-  "messaging/invalid-argument",
-]);
+/** How often the scheduler looks for due scheduled sends. */
+const POLL_INTERVAL_MS = 30_000;
 
-/** FCM hard limit on tokens per sendEachForMulticast call. */
-const MULTICAST_CHUNK = 500;
-
-/** Must match the channel the Flutter app creates and its manifest meta-data. */
-const ANDROID_CHANNEL_ID = "rewardhub_default";
-
-type MessageBase = Omit<MulticastMessage, "tokens">;
-
-/** Everything the app needs on tap rides in `data` — FCM requires string values. */
-const buildDataPayload = (job: NotificationJob): Record<string, string> => ({
-  type: job.type,
-  ...(job.route ? { route: job.route } : {}),
-  ...(job.imageUrl ? { imageUrl: job.imageUrl } : {}),
-  ...(job.data ?? {}),
+/** Rebuild the delivery job from the PushLog row the admin send created. */
+const jobFromPushLog = (log: PushLog): NotificationJob => ({
+  audience: log.audience as NotificationJob["audience"],
+  userId: log.userId ?? undefined,
+  topic: log.topic ?? undefined,
+  type: log.type,
+  title: log.title,
+  body: log.body,
+  imageUrl: log.imageUrl ?? undefined,
+  route: log.route ?? undefined,
+  data: (log.data ?? undefined) as Record<string, string> | undefined,
+  silent: log.silent,
+  pushLogId: log.id,
 });
 
-/** Shared message body for both token multicast and topic sends. */
-const buildMessageBase = (job: NotificationJob): MessageBase =>
-  job.silent
-    ? {
-        // Data-only: no `notification` key so no banner is shown; high priority
-        // so Android delivers promptly; content-available wakes the iOS app.
-        data: buildDataPayload(job),
-        android: { priority: "high" },
-        apns: { payload: { aps: { "content-available": 1 } } },
-      }
-    : {
-        data: buildDataPayload(job),
-        notification: {
-          title: job.title,
-          body: job.body,
-          ...(job.imageUrl ? { imageUrl: job.imageUrl } : {}),
-        },
-        android: {
-          priority: "high",
-          notification: { channelId: ANDROID_CHANNEL_ID },
-        },
-        apns: {
-          payload: { aps: { "mutable-content": 1 } },
-          ...(job.imageUrl ? { fcmOptions: { imageUrl: job.imageUrl } } : {}),
-        },
-      };
+/** Deliver every SCHEDULED push whose time has come. The guarded updateMany
+ *  (status must still be SCHEDULED) makes each row deliver exactly once even
+ *  if a sweep overlaps a restart. */
+const deliverDue = async (app: FastifyInstance): Promise<void> => {
+  const due = await app.prisma.pushLog.findMany({
+    where: { status: "SCHEDULED", scheduledAt: { lte: new Date() } },
+    orderBy: { scheduledAt: "asc" },
+    take: 50,
+  });
 
-const chunk = <T>(items: T[], size: number): T[][] =>
-  Array.from({ length: Math.ceil(items.length / size) }, (_, index) =>
-    items.slice(index * size, (index + 1) * size),
-  );
-
-/** Fields shared by every inbox row this job creates. */
-const inboxData = (job: NotificationJob) => ({
-  type: job.type,
-  title: job.title,
-  body: job.body,
-  imageUrl: job.imageUrl ?? null,
-  route: job.route ?? null,
-  data: (job.data ?? undefined) as Prisma.InputJsonValue | undefined,
-});
-
-/** Multicast to a token list; prunes tokens FCM reports as dead. */
-const pushToTokens = async (
-  app: FastifyInstance,
-  job: NotificationJob,
-  devices: { token: string }[],
-): Promise<{ success: number; failure: number }> => {
-  if (!app.firebaseMessaging || devices.length === 0) return { success: 0, failure: 0 };
-
-  const base = buildMessageBase(job);
-  let success = 0;
-  let failure = 0;
-
-  for (const batch of chunk(devices, MULTICAST_CHUNK)) {
-    const response = await app.firebaseMessaging.sendEachForMulticast({
-      tokens: batch.map((device) => device.token),
-      ...base,
+  for (const log of due) {
+    const claimed = await app.prisma.pushLog.updateMany({
+      where: { id: log.id, status: "SCHEDULED" },
+      data: { status: "QUEUED" },
     });
-    success += response.successCount;
-    failure += response.failureCount;
+    if (claimed.count === 0) continue;
 
-    const stale = response.responses
-      .map((result, index) =>
-        result.error && STALE_TOKEN_CODES.has(result.error.code) ? batch[index].token : null,
-      )
-      .filter((token): token is string => token !== null);
-    if (stale.length > 0) {
-      await app.prisma.deviceToken.deleteMany({ where: { token: { in: stale } } });
-      app.log.info({ pruned: stale.length }, "pruned stale FCM tokens");
+    try {
+      await dispatchNotification(app, jobFromPushLog(log));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      app.log.error({ err: error, pushLogId: log.id }, "scheduled push delivery failed");
+      await app.prisma.pushLog
+        .update({
+          where: { id: log.id },
+          data: { status: "FAILED", error: message.slice(0, 500) },
+        })
+        .catch(() => {});
     }
   }
-
-  return { success, failure };
-};
-
-/** Push to one user's registered devices. */
-const pushToUser = async (
-  app: FastifyInstance,
-  job: NotificationJob,
-): Promise<{ success: number; failure: number }> => {
-  if (!job.userId) return { success: 0, failure: 0 };
-  const devices = await app.prisma.deviceToken.findMany({
-    where: { userId: job.userId },
-    select: { token: true },
-  });
-  const outcome = await pushToTokens(app, job, devices);
-  app.log.info(
-    { userId: job.userId, sent: outcome.success, failed: outcome.failure },
-    "push sent to user devices",
-  );
-  return outcome;
 };
 
 /**
- * Record the delivery outcome on the PushLog row (admin send history).
- * Never throws — the push already went out, and failing the job here
- * would make BullMQ retry and re-send it.
+ * In-process scheduler for admin-scheduled pushes — replaces the BullMQ
+ * delayed-job worker so the backend runs without Redis. Sweeps at boot
+ * (catching up anything missed while the service was down) and then every
+ * POLL_INTERVAL_MS. Returns a stop function for graceful shutdown.
  */
-const recordOutcome = async (
-  app: FastifyInstance,
-  pushLogId: string | undefined,
-  outcome: { success: number; failure: number },
-  error?: string,
-): Promise<void> => {
-  if (!pushLogId) return;
-  const status = error
-    ? "FAILED"
-    : outcome.failure === 0
-      ? "SENT"
-      : outcome.success > 0
-        ? "PARTIAL"
-        : "FAILED";
-  try {
-    await app.prisma.pushLog.update({
-      where: { id: pushLogId },
-      data: {
-        status,
-        successCount: outcome.success,
-        failureCount: outcome.failure,
-        error: error ?? null,
-      },
-    });
-  } catch (updateError) {
-    app.log.error({ err: updateError, pushLogId }, "failed to record push outcome");
-  }
-};
-
-export const startWorkers = (app: FastifyInstance): Worker[] => {
-  const notificationWorker = createWorker(NOTIFICATIONS_QUEUE, async (job) => {
-    const payload = job.data as NotificationJob;
-
-    if (payload.audience === "topic") {
-      // Arbitrary topic: push only — the server can't know the subscribers,
-      // so there are no inbox rows to write and no per-device counts.
-      if (!app.firebaseMessaging || !payload.topic) {
-        await recordOutcome(app, payload.pushLogId, { success: 0, failure: 0 }, "Firebase messaging not configured");
-        return;
-      }
-      await app.firebaseMessaging.send({ topic: payload.topic, ...buildMessageBase(payload) });
-      // success=1 means "one topic message accepted by FCM", not a device count.
-      await recordOutcome(app, payload.pushLogId, { success: 1, failure: 0 });
-      app.log.info({ topic: payload.topic, type: payload.type }, "topic push delivered");
-      return;
+export const startScheduler = (app: FastifyInstance): (() => void) => {
+  let running = false;
+  const sweep = async (): Promise<void> => {
+    if (running) return; // a slow sweep must not overlap the next tick
+    running = true;
+    try {
+      await deliverDue(app);
+    } catch (error) {
+      app.log.error({ err: error }, "scheduled-push sweep failed");
+    } finally {
+      running = false;
     }
+  };
 
-    if (payload.audience === "all") {
-      // 1) In-app inbox row for every active user (skipped for silent pushes —
-      //    they are machine-to-machine, not inbox content).
-      let users = 0;
-      if (!payload.silent) {
-        const rows = await app.prisma.user.findMany({
-          where: { isActive: true },
-          select: { id: true },
-        });
-        await app.prisma.notification.createMany({
-          data: rows.map((user) => ({ userId: user.id, ...inboxData(payload) })),
-        });
-        users = rows.length;
-      }
+  void sweep();
+  const timer = setInterval(() => void sweep(), POLL_INTERVAL_MS);
+  timer.unref(); // never keep the process alive on its own
 
-      // 2) Direct multicast to every registered device. Topic broadcasts
-      //    depend on each phone's fragile subscription state (lost on
-      //    reinstall until the next app open); token multicast is exactly as
-      //    reliable as single-user sends and reports real delivery counts.
-      const devices = await app.prisma.deviceToken.findMany({ select: { token: true } });
-      const outcome = await pushToTokens(app, payload, devices);
-      await recordOutcome(app, payload.pushLogId, outcome);
-      app.log.info(
-        { users, devices: devices.length, sent: outcome.success, failed: outcome.failure },
-        "broadcast delivered",
-      );
-      return;
-    }
-
-    if (!payload.userId) {
-      app.log.warn({ job: job.id }, "notification job missing userId — skipped");
-      return;
-    }
-
-    if (!payload.silent) {
-      await app.prisma.notification.create({
-        data: { userId: payload.userId, ...inboxData(payload) },
-      });
-    }
-    const outcome = await pushToUser(app, payload);
-    await recordOutcome(app, payload.pushLogId, outcome);
-  });
-
-  // Once a job exhausts its retries, surface the failure in the send history.
-  notificationWorker.on("failed", (job, error) => {
-    const payload = job?.data as NotificationJob | undefined;
-    if (!payload?.pushLogId) return;
-    if ((job?.attemptsMade ?? 0) < (job?.opts.attempts ?? 1)) return;
-    void recordOutcome(app, payload.pushLogId, { success: 0, failure: 0 }, error.message.slice(0, 500));
-  });
-
-  const analyticsWorker = createWorker(ANALYTICS_QUEUE, async (job) => {
-    const data = job.data as AnalyticsJob;
-    await app.prisma.analyticsEvent.create({
-      data: {
-        name: data.name,
-        userId: data.userId,
-        metadata: data.metadata as Prisma.InputJsonValue | undefined,
-      },
-    });
-  });
-
-  const auditWorker = createWorker(QUEUES.AUDIT, async (job) => {
-    const data = job.data as AuditJob;
-    await app.prisma.auditLog.create({
-      data: {
-        userId: data.userId,
-        userEmail: data.userEmail,
-        action: data.action,
-        method: data.method,
-        path: data.path,
-        statusCode: data.statusCode,
-        ip: data.ip,
-        userAgent: data.userAgent,
-      },
-    });
-  });
-
-  const workers = [notificationWorker, analyticsWorker, auditWorker];
-  for (const worker of workers) {
-    worker.on("failed", (job, error) => {
-      app.log.error({ queue: worker.name, jobId: job?.id, err: error.message }, "queue job failed");
-    });
-  }
-
-  app.log.info("BullMQ workers started (notifications, analytics, audit)");
-  return workers;
+  app.log.info("in-process push scheduler started (Redis-free)");
+  return () => clearInterval(timer);
 };

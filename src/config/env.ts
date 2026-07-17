@@ -25,7 +25,6 @@ const envSchema = z.object({
   TRUST_PROXY: z.coerce.boolean().default(false),
 
   DATABASE_URL: z.string().min(1),
-  REDIS_URL: z.string().min(1),
 
   JWT_SECRET: z.string().min(1),
   JWT_ACCESS_EXPIRES_IN: z.string().default("15m"),
