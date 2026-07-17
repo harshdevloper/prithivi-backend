@@ -34,4 +34,8 @@ export class UsersController {
   referralStats = async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     reply.send(success(await this.usersService.getReferralStats(request.user.sub)));
   };
+
+  dailyLeaderboard = async (_request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    reply.send(success(await this.usersService.getDailyLeaderboard()));
+  };
 }

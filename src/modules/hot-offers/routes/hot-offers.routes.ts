@@ -205,6 +205,21 @@ export const hotOffersRoutes = async (app: FastifyInstance): Promise<void> => {
     controller.reviewSubmission,
   );
 
+  app.patch<{ Params: IdParams }>(
+    "/admin/submissions/:id/reopen",
+    {
+      preHandler: [authGuard, superAdminOnly],
+      schema: {
+        tags: ["hot-offers"],
+        summary:
+          "Let the user participate in this offer again (finished submission -> CANCELLED; credited coins untouched) (super admin)",
+        security: [{ bearerAuth: [] }],
+        params: idParamsSchema,
+      },
+    },
+    controller.reopenSubmission,
+  );
+
   app.get(
     "/admin/categories",
     {

@@ -97,6 +97,40 @@ export class UsersRepository {
     }
   }
 
+  /**
+   * Top earners since `since`: sums wallet CREDITs per user (refund credits
+   * excluded — a refund isn't earning) and returns the users, ranked.
+   */
+  async topEarnersSince(
+    since: Date,
+    take: number,
+  ): Promise<Array<{ user: User; coins: number }>> {
+    const sums = await this.prisma.walletTransaction.groupBy({
+      by: ["walletId"],
+      where: {
+        type: "CREDIT",
+        createdAt: { gte: since },
+        NOT: { reference: { startsWith: "redemption-refund:" } },
+      },
+      _sum: { amount: true },
+      orderBy: { _sum: { amount: "desc" } },
+      take,
+    });
+    if (sums.length === 0) return [];
+
+    const wallets = await this.prisma.wallet.findMany({
+      where: { id: { in: sums.map((s) => s.walletId) } },
+      include: { user: true },
+    });
+    const byWallet = new Map(wallets.map((w) => [w.id, w.user]));
+
+    return sums.flatMap((s) => {
+      const user = byWallet.get(s.walletId);
+      if (!user || !user.isActive) return [];
+      return [{ user, coins: Number(s._sum.amount ?? 0) }];
+    });
+  }
+
   /** How many users this user referred + the coins credited for them. */
   async referralStats(userId: string): Promise<{ referredCount: number; coinsEarned: number }> {
     const [referredCount, credited] = await Promise.all([
