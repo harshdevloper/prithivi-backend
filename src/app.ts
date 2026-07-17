@@ -6,7 +6,6 @@ import { HEADERS } from "./config/constants.js";
 import { loggerConfig } from "./config/logger.js";
 import {
   prismaPlugin,
-  redisPlugin,
   jwtPlugin,
   swaggerPlugin,
   securityPlugin,
@@ -42,9 +41,8 @@ export const buildApp = async (): Promise<FastifyInstance> => {
     done();
   });
 
-  // Infra first (redis before security: the rate limiter uses the shared connection).
+  // Infra first.
   await app.register(prismaPlugin);
-  await app.register(redisPlugin);
   await app.register(securityPlugin);
   await app.register(swaggerPlugin);
   await app.register(jwtPlugin);
@@ -52,12 +50,9 @@ export const buildApp = async (): Promise<FastifyInstance> => {
   await app.register(staticPlugin);
   await app.register(auditPlugin);
 
-  // Composition root — repositories, services, controllers, queues.
+  // Composition root — repositories, services, controllers.
   const container = buildContainer(app);
   app.decorate("di", container);
-  app.addHook("onClose", async () => {
-    await Promise.all([container.notificationQueue.close(), container.analyticsQueue.close()]);
-  });
 
   await registerRoutes(app);
 

@@ -1,15 +1,15 @@
 import { buildApp } from "./app.js";
 import { env } from "./config/env.js";
-import { startWorkers } from "./workers/index.js";
+import { startScheduler } from "./workers/index.js";
 
 const start = async (): Promise<void> => {
   const app = await buildApp();
-  const workers = startWorkers(app);
+  const stopScheduler = startScheduler(app);
 
   const shutdown = async (signal: string): Promise<void> => {
     app.log.info({ signal }, "shutting down");
     try {
-      await Promise.all(workers.map((worker) => worker.close()));
+      stopScheduler();
       await app.close();
       process.exit(0);
     } catch (error) {

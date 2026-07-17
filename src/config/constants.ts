@@ -6,12 +6,6 @@ export const ROLES = {
   SUPER_ADMIN: "SUPER_ADMIN",
 } as const;
 
-export const QUEUES = {
-  NOTIFICATIONS: "notifications",
-  ANALYTICS: "analytics",
-  AUDIT: "audit",
-} as const;
-
 export const PAGINATION = {
   DEFAULT_PAGE: 1,
   DEFAULT_LIMIT: 20,

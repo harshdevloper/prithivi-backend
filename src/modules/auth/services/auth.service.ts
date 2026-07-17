@@ -79,21 +79,34 @@ export class AuthService {
     await this.refreshTokens.revokeAllForUser(userId);
   }
 
+  // ponytail: in-memory single-use web codes (120s TTL) — correct for a
+  // single instance; codes die on restart, and the WebZone handshake already
+  // retries with a fresh code. Move to Redis/DB only if replicas appear.
+  private readonly webCodes = new Map<string, { userId: string; expiresAt: number }>();
+
   /** One-time code the app hands to the website to bootstrap a web session. */
   async createWebCode(userId: string): Promise<{ code: string }> {
+    // Opportunistic sweep keeps the map from accumulating expired entries.
+    const now = Date.now();
+    for (const [key, entry] of this.webCodes) {
+      if (entry.expiresAt <= now) this.webCodes.delete(key);
+    }
+
     const code = generateOpaqueToken();
-    await this.app.redis.set(`webcode:${code}`, userId, "EX", 120);
+    this.webCodes.set(code, { userId, expiresAt: now + 120_000 });
     return { code };
   }
 
   async exchangeWebCode(code: string): Promise<AuthTokens> {
-    // GETDEL makes the code single-use even under concurrent exchanges.
-    const userId = await this.app.redis.getdel(`webcode:${code}`);
-    if (!userId) {
+    // Read + delete makes the code single-use (JS is single-threaded, so this
+    // pair can't interleave with a concurrent exchange).
+    const entry = this.webCodes.get(code);
+    this.webCodes.delete(code);
+    if (!entry || entry.expiresAt <= Date.now()) {
       throw new UnauthorizedError("Invalid or expired code");
     }
 
-    const user = await this.users.findById(userId);
+    const user = await this.users.findById(entry.userId);
     if (!user || !user.isActive) {
       throw new UnauthorizedError("Invalid or expired code");
     }

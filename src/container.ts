@@ -1,5 +1,4 @@
 import type { FastifyInstance } from "fastify";
-import type { Queue } from "bullmq";
 
 import { UsersRepository } from "./modules/users/repositories/users.repository.js";
 import { RefreshTokenRepository } from "./modules/auth/repositories/refresh-token.repository.js";
@@ -46,13 +45,9 @@ import { MissionsController } from "./modules/missions/controllers/missions.cont
 import { GameController } from "./modules/game/controllers/game.controller.js";
 import { env } from "./config/env.js";
 
-import { createNotificationQueue } from "./modules/notifications/queues/notification.queue.js";
-import { createAnalyticsQueue } from "./modules/analytics/queues/analytics.queue.js";
 
 export interface Container {
   // queues
-  notificationQueue: Queue;
-  analyticsQueue: Queue;
 
   // services
   authService: AuthService;
@@ -115,18 +110,16 @@ export const buildContainer = (app: FastifyInstance): Container => {
   const redemptionsRepository = new RedemptionsRepository(prisma);
 
   // queues
-  const notificationQueue = createNotificationQueue();
-  const analyticsQueue = createAnalyticsQueue();
 
   // services
   const authService = new AuthService(app, usersRepository, refreshTokenRepository, walletRepository);
-  const notificationsService = new NotificationsService(notificationsRepository, notificationQueue);
+  const notificationsService = new NotificationsService(notificationsRepository, app);
   const settingsService = new SettingsService(settingsRepository);
   const usersService = new UsersService(prisma, usersRepository, settingsService, notificationsService);
   const campaignService = new CampaignService(campaignRepository, notificationsService);
   const claimsService = new ClaimsService(prisma, claimsRepository, campaignRepository, notificationsService);
   const walletService = new WalletService(walletRepository);
-  const analyticsService = new AnalyticsService(analyticsRepository, analyticsQueue);
+  const analyticsService = new AnalyticsService(analyticsRepository);
   const uploadsService = new UploadsService();
   const hotOffersService = new HotOffersService(
     hotOffersRepository,
@@ -156,8 +149,6 @@ export const buildContainer = (app: FastifyInstance): Container => {
   );
 
   return {
-    notificationQueue,
-    analyticsQueue,
 
     authService,
     usersService,
