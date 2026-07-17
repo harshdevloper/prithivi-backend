@@ -496,7 +496,9 @@ model Redemption {
 
   user         User          @relation("RedemptionUser", fields: [userId], references: [id], onDelete: Cascade)
   reviewedBy   User?         @relation("RedemptionReviewer", fields: [reviewedById], references: [id])
-  voucherOffer VoucherOffer? @relation(fields: [voucherOfferId], references: [id])
+  // Restrict (not the optional-relation default SetNull): deleting an offer
+  // must never silently strip attribution off an in-flight redemption.
+  voucherOffer VoucherOffer? @relation(fields: [voucherOfferId], references: [id], onDelete: Restrict)
 
   @@index([userId])
   @@index([status])

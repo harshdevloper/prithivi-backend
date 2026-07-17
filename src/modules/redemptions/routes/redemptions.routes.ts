@@ -174,7 +174,7 @@ export const redemptionsRoutes = async (app: FastifyInstance): Promise<void> => 
       schema: {
         tags: ["redemptions"],
         summary:
-          "Delete a voucher offer with no redemptions attached; otherwise deactivate it instead (super admin)",
+          "Delete a voucher offer; 409 when redemptions reference it — PATCH isActive:false instead (super admin)",
         security: [{ bearerAuth: [] }],
         params: idParamsSchema,
       },

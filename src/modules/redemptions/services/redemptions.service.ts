@@ -137,13 +137,27 @@ export class RedemptionsService {
       this.provider !== null && (offer ? offer.provider === this.provider.name : true);
     if (!useProvider) return toRedemptionDto(approved, true);
 
+    // Only the provider call may be treated as a provider failure — once a
+    // voucher is issued, real money exists and must never be silently lost.
+    let voucher;
     try {
-      const voucher = await this.provider!.issueVoucher({
+      voucher = await this.provider!.issueVoucher({
         amount: offer ? Number(offer.denomination) : Number(approved.coins),
         brandId: offer?.providerBrandId ?? undefined,
         userEmail: approved.user.email,
         redemptionId: approved.id,
       });
+    } catch (error) {
+      // Provider failed — keep the approval, queue for manual fulfillment.
+      const reason = error instanceof Error ? error.message : String(error);
+      const parked = await this.repo.guardedUpdate(id, ["APPROVED"], {
+        provider: this.provider!.name,
+        failReason: reason.slice(0, 1000),
+      });
+      return toRedemptionDto(parked, true);
+    }
+
+    try {
       const fulfilled = await this.repo.guardedUpdate(id, ["APPROVED"], {
         status: "FULFILLED",
         provider: this.provider!.name,
@@ -154,14 +168,26 @@ export class RedemptionsService {
       });
       await this.notifyFulfilled(fulfilled.userId);
       return toRedemptionDto(fulfilled, true);
-    } catch (error) {
-      // Provider failed — keep the approval, queue for manual fulfillment.
-      const reason = error instanceof Error ? error.message : String(error);
-      const parked = await this.repo.guardedUpdate(id, ["APPROVED"], {
-        provider: this.provider!.name,
-        failReason: reason.slice(0, 1000),
-      });
-      return toRedemptionDto(parked, true);
+    } catch (persistError) {
+      // The voucher IS issued but couldn't be recorded (transient DB error,
+      // or a concurrent manual fulfill won the race). Log it, then park the
+      // code in failReason on whatever state the row is in so an admin can
+      // reconcile instead of paying out twice.
+      console.error(
+        `[redemptions] issued voucher NOT persisted for redemption ${id}: ` +
+          `code=${voucher.code}${voucher.ref ? ` ref=${voucher.ref}` : ""} — reconcile manually`,
+        persistError,
+      );
+      try {
+        const parked = await this.repo.guardedUpdate(id, ["APPROVED", "FULFILLED"], {
+          failReason:
+            `Auto-issued voucher needs reconciliation: code=${voucher.code}` +
+            `${voucher.ref ? ` ref=${voucher.ref}` : ""}`.slice(0, 1000),
+        });
+        return toRedemptionDto(parked, true);
+      } catch {
+        throw persistError; // already logged with the voucher code above
+      }
     }
   }
 

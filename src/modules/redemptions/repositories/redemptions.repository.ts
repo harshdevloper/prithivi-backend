@@ -204,7 +204,10 @@ export class RedemptionsRepository {
     return this.prisma.voucherOffer.update({ where: { id }, data });
   }
 
-  /** Hard delete only when nothing references the offer; else 409 — deactivate instead. */
+  /** Hard delete only when nothing references the offer; else 409 — deactivate
+   *  instead. The FK is onDelete: Restrict, so a redemption created between
+   *  the count and the delete makes the delete throw P2003 instead of
+   *  silently stripping attribution. */
   async deleteOffer(id: string): Promise<void> {
     const used = await this.prisma.redemption.count({ where: { voucherOfferId: id } });
     if (used > 0) {
@@ -212,6 +215,18 @@ export class RedemptionsRepository {
         "This offer has redemptions attached — deactivate it instead of deleting",
       );
     }
-    await this.prisma.voucherOffer.delete({ where: { id } });
+    try {
+      await this.prisma.voucherOffer.delete({ where: { id } });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2003"
+      ) {
+        throw new ConflictError(
+          "This offer has redemptions attached — deactivate it instead of deleting",
+        );
+      }
+      throw error;
+    }
   }
 }
