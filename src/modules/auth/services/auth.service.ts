@@ -97,6 +97,21 @@ export class AuthService {
     return { code };
   }
 
+  /**
+   * Full token pair for the embedded website, handed over by the app through
+   * the WebView bridge in one call — no code round-trip, no second exchange
+   * request from inside the WebView (that hop proved fragile on real phones).
+   * The pair is independent of the app's own tokens, so web refresh rotation
+   * can never revoke the app session.
+   */
+  async createWebSession(userId: string): Promise<AuthTokens> {
+    const user = await this.users.findById(userId);
+    if (!user || !user.isActive) {
+      throw new UnauthorizedError("Invalid session");
+    }
+    return this.issueTokens(user);
+  }
+
   async exchangeWebCode(code: string): Promise<AuthTokens> {
     // Read + delete makes the code single-use (JS is single-threaded, so this
     // pair can't interleave with a concurrent exchange).

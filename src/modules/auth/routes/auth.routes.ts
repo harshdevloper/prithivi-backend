@@ -52,6 +52,21 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
     controller.createWebCode,
   );
 
+  app.post(
+    "/web-session",
+    {
+      preHandler: [authGuard],
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["auth"],
+        summary:
+          "Token pair for the embedded website, injected by the app via the WebView bridge",
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    controller.createWebSession,
+  );
+
   app.post<{ Body: WebCodeExchangeInput }>(
     "/web-exchange",
     {

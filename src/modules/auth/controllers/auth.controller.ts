@@ -31,6 +31,11 @@ export class AuthController {
     reply.send(success(result));
   };
 
+  createWebSession = async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    const result = await this.authService.createWebSession(request.user.sub);
+    reply.send(success(result));
+  };
+
   exchangeWebCode = async (
     request: FastifyRequest<{ Body: WebCodeExchangeInput }>,
     reply: FastifyReply,
