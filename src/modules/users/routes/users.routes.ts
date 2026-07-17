@@ -76,4 +76,17 @@ export const usersRoutes = async (app: FastifyInstance): Promise<void> => {
     },
     controller.referralStats,
   );
+
+  app.get(
+    "/leaderboard/today",
+    {
+      preHandler: [authGuard],
+      schema: {
+        tags: ["users"],
+        summary: "Today's top-10 earners (coins credited since midnight IST)",
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    controller.dailyLeaderboard,
+  );
 };

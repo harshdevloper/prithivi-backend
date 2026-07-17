@@ -437,6 +437,24 @@ export class HotOffersRepository {
     });
   }
 
+  /**
+   * Admin re-opens a finished submission so the user may participate in the
+   * offer again: CANCELLED passes the submit gate, and the next submission
+   * reuses this row (unique [offerId,userId]). Guarded so a racing review
+   * loses cleanly.
+   */
+  async reopenSubmission(id: string, reviewerId: string): Promise<SubmissionWithRelations | null> {
+    const marked = await this.prisma.offerSubmission.updateMany({
+      where: { id, status: { in: ["APPROVED", "REJECTED", "NEED_MORE_PROOF"] } },
+      data: { status: "CANCELLED", reviewedById: reviewerId, reviewedAt: new Date() },
+    });
+    if (marked.count === 0) return null;
+    return this.prisma.offerSubmission.findUnique({
+      where: { id },
+      include: SUBMISSION_OFFER_SELECT,
+    });
+  }
+
   // ---- fraud & duplicate protection (Module 4) ----
 
   async createSubmissionImages(

@@ -181,6 +181,28 @@ export class UsersService {
     return { applied: true, rewardPoints };
   }
 
+  /**
+   * Today's top-10 earners (coins credited since midnight IST — the user
+   * base's local day). ponytail: IST offset hardcoded; make it a setting if
+   * the app ever leaves India.
+   */
+  async getDailyLeaderboard(): Promise<
+    Array<{ rank: number; name: string; avatarUrl: string | null; coins: number }>
+  > {
+    const IST_OFFSET_MS = 5.5 * 3_600_000;
+    const istNow = new Date(Date.now() + IST_OFFSET_MS);
+    istNow.setUTCHours(0, 0, 0, 0);
+    const dayStartUtc = new Date(istNow.getTime() - IST_OFFSET_MS);
+
+    const top = await this.users.topEarnersSince(dayStartUtc, 10);
+    return top.map((entry, index) => ({
+      rank: index + 1,
+      name: entry.user.name,
+      avatarUrl: entry.user.avatarUrl,
+      coins: entry.coins,
+    }));
+  }
+
   /** Sharer-facing referral stats + whether this user already applied a code.
    *  Also backfills a missing referralCode so Share & Earn always has one. */
   async getReferralStats(

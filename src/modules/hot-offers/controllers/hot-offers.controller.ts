@@ -195,6 +195,15 @@ export class HotOffersController {
     );
   };
 
+  reopenSubmission = async (
+    request: FastifyRequest<{ Params: IdParams }>,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    reply.send(
+      success(await this.service.reopenSubmission(request.params.id, request.user.sub)),
+    );
+  };
+
   mySubmissionForOffer = async (
     request: FastifyRequest<{ Params: IdParams }>,
     reply: FastifyReply,

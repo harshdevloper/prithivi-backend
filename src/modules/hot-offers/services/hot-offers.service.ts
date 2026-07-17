@@ -412,6 +412,26 @@ export class HotOffersService {
     return submission ? toSubmissionDto(submission) : null;
   }
 
+  /**
+   * Admin lets a user participate in the same offer again: any finished
+   * submission (approved/rejected/need-more-proof) flips to CANCELLED, which
+   * the submit gate treats as "may submit again". Already-credited coins are
+   * untouched — this only re-opens the door.
+   */
+  async reopenSubmission(id: string, reviewerId: string): Promise<SubmissionDto> {
+    const submission = await this.repo.findSubmissionById(id);
+    if (!submission) throw new NotFoundError("Submission not found");
+    if (submission.status === "PENDING") {
+      throw new BadRequestError("This submission is awaiting review — approve or reject it instead");
+    }
+    if (submission.status === "CANCELLED") {
+      throw new BadRequestError("The user can already submit again for this offer");
+    }
+    const reopened = await this.repo.reopenSubmission(id, reviewerId);
+    if (!reopened) throw new ConflictError("Submission was updated concurrently — refresh and retry");
+    return toSubmissionDto(reopened);
+  }
+
   /** User cancels their own pending submission. */
   async cancelSubmission(userId: string, id: string): Promise<SubmissionDto> {
     const submission = await this.repo.findSubmissionById(id);
