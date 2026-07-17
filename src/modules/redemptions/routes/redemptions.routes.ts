@@ -1,18 +1,23 @@
 import type { FastifyInstance } from "fastify";
 import { authGuard } from "../../../middleware/auth-guard.js";
 import { adminOnly, superAdminOnly } from "../../../middleware/role-guard.js";
-import { paginationQuerySchema, type PaginationQuery } from "../../../common/pagination.js";
 import {
   adminListRedemptionsQuerySchema,
   createRedemptionSchema,
+  createVoucherOfferSchema,
   fulfillRedemptionSchema,
   idParamsSchema,
+  listMineQuerySchema,
   reviewRedemptionSchema,
+  updateVoucherOfferSchema,
   type AdminListRedemptionsQuery,
   type CreateRedemptionInput,
+  type CreateVoucherOfferInput,
   type FulfillRedemptionInput,
   type IdParams,
+  type ListMineQuery,
   type ReviewRedemptionInput,
+  type UpdateVoucherOfferInput,
 } from "../schemas/redemptions.schema.js";
 
 /** Registered under /redemptions. User endpoints need auth; admin list is
@@ -46,18 +51,29 @@ export const redemptionsRoutes = async (app: FastifyInstance): Promise<void> => 
     controller.request,
   );
 
-  app.get<{ Querystring: PaginationQuery }>(
+  app.get<{ Querystring: ListMineQuery }>(
     "/me",
     {
       preHandler: [authGuard],
       schema: {
         tags: ["redemptions"],
-        summary: "List my redemption requests, newest first",
+        summary: "List my redemption requests, newest first (optional status filter)",
         security: [{ bearerAuth: [] }],
-        querystring: paginationQuerySchema,
+        querystring: listMineQuerySchema,
       },
     },
     controller.listMine,
+  );
+
+  app.get(
+    "/catalog",
+    {
+      schema: {
+        tags: ["redemptions"],
+        summary: "Active voucher catalog (the app's coupon store)",
+      },
+    },
+    controller.catalog,
   );
 
   // ---- admin ----
@@ -105,5 +121,64 @@ export const redemptionsRoutes = async (app: FastifyInstance): Promise<void> => 
       },
     },
     controller.fulfill,
+  );
+
+  // ---- voucher catalog admin ----
+
+  app.get(
+    "/admin/catalog",
+    {
+      preHandler: [authGuard, adminOnly],
+      schema: {
+        tags: ["redemptions"],
+        summary: "Full voucher catalog including inactive offers (admin)",
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    controller.catalogAdmin,
+  );
+
+  app.post<{ Body: CreateVoucherOfferInput }>(
+    "/admin/catalog",
+    {
+      preHandler: [authGuard, superAdminOnly],
+      schema: {
+        tags: ["redemptions"],
+        summary: "Create a voucher offer (super admin)",
+        security: [{ bearerAuth: [] }],
+        body: createVoucherOfferSchema,
+      },
+    },
+    controller.createOffer,
+  );
+
+  app.patch<{ Params: IdParams; Body: UpdateVoucherOfferInput }>(
+    "/admin/catalog/:id",
+    {
+      preHandler: [authGuard, superAdminOnly],
+      schema: {
+        tags: ["redemptions"],
+        summary: "Update a voucher offer (super admin)",
+        security: [{ bearerAuth: [] }],
+        params: idParamsSchema,
+        body: updateVoucherOfferSchema,
+      },
+    },
+    controller.updateOffer,
+  );
+
+  app.delete<{ Params: IdParams }>(
+    "/admin/catalog/:id",
+    {
+      preHandler: [authGuard, superAdminOnly],
+      schema: {
+        tags: ["redemptions"],
+        summary:
+          "Delete a voucher offer with no redemptions attached; otherwise deactivate it instead (super admin)",
+        security: [{ bearerAuth: [] }],
+        params: idParamsSchema,
+      },
+    },
+    controller.deleteOffer,
   );
 };

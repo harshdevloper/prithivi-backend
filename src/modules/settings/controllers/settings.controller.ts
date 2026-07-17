@@ -13,7 +13,13 @@ export class SettingsController {
   publicConfig = async (_request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     reply
       .header("Cache-Control", "public, max-age=300")
-      .send(success({ webBaseUrl: await this.service.getString("web.baseUrl") }));
+      .send(
+        success({
+          webBaseUrl: await this.service.getString("web.baseUrl"),
+          telegramUrl: await this.service.getString("social.telegramUrl"),
+          linkedinUrl: await this.service.getString("social.linkedinUrl"),
+        }),
+      );
   };
 
   update = async (

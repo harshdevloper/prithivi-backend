@@ -1,4 +1,4 @@
-import type { Role } from "@prisma/client";
+import type { PrismaClient, Role } from "@prisma/client";
 import { ForbiddenError, NotFoundError } from "../../../common/errors.js";
 import { buildMeta, type PaginationQuery } from "../../../common/pagination.js";
 import type { PageMeta } from "../../../common/response.js";
@@ -17,6 +17,7 @@ import type {
 
 export class AdminService {
   constructor(
+    private readonly prisma: PrismaClient,
     private readonly users: UsersRepository,
     private readonly campaigns: CampaignRepository,
     private readonly claims: ClaimsRepository,
@@ -25,14 +26,31 @@ export class AdminService {
   ) {}
 
   async stats(): Promise<AdminStats> {
-    const [totalUsers, activeCampaigns, pendingClaims, approvedClaims, totalBalance] =
-      await Promise.all([
-        this.users.count(),
-        this.campaigns.countByStatus("ACTIVE"),
-        this.claims.countByStatus("PENDING"),
-        this.claims.countByStatus("APPROVED"),
-        this.wallets.totalBalance(),
-      ]);
+    const [
+      totalUsers,
+      activeCampaigns,
+      pendingClaims,
+      approvedClaims,
+      totalBalance,
+      pendingSubmissions,
+      pendingRedemptions,
+      pendingRedemptionCoins,
+      fulfilledRedemptions,
+      pendingMissionCompletions,
+      totalReferrals,
+    ] = await Promise.all([
+      this.users.count(),
+      this.campaigns.countByStatus("ACTIVE"),
+      this.claims.countByStatus("PENDING"),
+      this.claims.countByStatus("APPROVED"),
+      this.wallets.totalBalance(),
+      this.prisma.offerSubmission.count({ where: { status: "PENDING" } }),
+      this.prisma.redemption.count({ where: { status: "PENDING" } }),
+      this.prisma.redemption.aggregate({ where: { status: "PENDING" }, _sum: { coins: true } }),
+      this.prisma.redemption.count({ where: { status: "FULFILLED" } }),
+      this.prisma.missionCompletion.count({ where: { status: "PENDING" } }),
+      this.prisma.user.count({ where: { referredById: { not: null } } }),
+    ]);
 
     return {
       totalUsers,
@@ -40,6 +58,12 @@ export class AdminService {
       pendingClaims,
       approvedClaims,
       totalWalletBalance: totalBalance?.toNumber() ?? 0,
+      pendingSubmissions,
+      pendingRedemptions,
+      coinsInPendingRedemptions: Number(pendingRedemptionCoins._sum.coins ?? 0),
+      fulfilledRedemptions,
+      pendingMissionCompletions,
+      totalReferrals,
     };
   }
 

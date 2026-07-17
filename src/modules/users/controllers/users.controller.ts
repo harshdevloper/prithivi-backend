@@ -30,4 +30,8 @@ export class UsersController {
     const result = await this.usersService.applyReferral(request.user.sub, request.body.code);
     reply.send(success(result));
   };
+
+  referralStats = async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    reply.send(success(await this.usersService.getReferralStats(request.user.sub)));
+  };
 }

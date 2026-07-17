@@ -1,39 +1,53 @@
 import { Prisma } from "@prisma/client";
-import type { PrismaClient, Redemption, RedemptionStatus } from "@prisma/client";
-import { BadRequestError } from "../../../common/errors.js";
-import type { RedemptionWithUser } from "../schemas/redemptions.schema.js";
+import type { PrismaClient, RedemptionStatus, VoucherOffer } from "@prisma/client";
+import { BadRequestError, ConflictError } from "../../../common/errors.js";
+import type { RedemptionWithOffer, RedemptionWithUser } from "../schemas/redemptions.schema.js";
 
-const USER_SELECT = { user: { select: { id: true, name: true, email: true } } } as const;
+const OFFER_SELECT = {
+  select: { id: true, title: true, brand: true, imageUrl: true, denomination: true },
+} as const;
+
+const INCLUDE_ALL = {
+  user: { select: { id: true, name: true, email: true } },
+  voucherOffer: OFFER_SELECT,
+} as const;
 
 export class RedemptionsRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
   findById(id: string): Promise<RedemptionWithUser | null> {
-    return this.prisma.redemption.findUnique({ where: { id }, include: USER_SELECT });
-  }
-
-  async hasPending(userId: string): Promise<boolean> {
-    return (await this.prisma.redemption.count({ where: { userId, status: "PENDING" } })) > 0;
+    return this.prisma.redemption.findUnique({ where: { id }, include: INCLUDE_ALL });
   }
 
   /**
-   * Atomically: re-check balance, debit the wallet and create the PENDING
-   * redemption. The balance check lives inside the transaction so concurrent
-   * requests can't double-spend.
+   * Atomically: enforce the one-pending rule, re-check balance, debit the
+   * wallet and create the PENDING redemption. All guards live inside the
+   * transaction so concurrent requests can't double-spend or double-submit.
    */
-  createRequest(userId: string, coins: number): Promise<Redemption> {
+  createRequest(
+    userId: string,
+    coins: number,
+    voucherOfferId?: string,
+  ): Promise<RedemptionWithOffer> {
     return this.prisma.$transaction(async (tx) => {
       const wallet = await tx.wallet.upsert({
         where: { userId },
         create: { userId },
         update: {},
       });
+      // The upsert's forced UPDATE (@updatedAt) row-locks the wallet, so the
+      // pending-count check below is serialized per user.
+      const pending = await tx.redemption.count({ where: { userId, status: "PENDING" } });
+      if (pending > 0) {
+        throw new ConflictError("You already have a pending redemption request");
+      }
       if (wallet.balance.lessThan(coins)) {
         throw new BadRequestError("Insufficient wallet balance");
       }
 
       const redemption = await tx.redemption.create({
-        data: { userId, coins: new Prisma.Decimal(coins) },
+        data: { userId, coins: new Prisma.Decimal(coins), voucherOfferId: voucherOfferId ?? null },
+        include: { voucherOffer: OFFER_SELECT },
       });
 
       const updated = await tx.wallet.update({
@@ -55,13 +69,23 @@ export class RedemptionsRepository {
     });
   }
 
-  /** Atomically: mark REJECTED and refund the debited coins to the wallet. */
+  /**
+   * Atomically: mark REJECTED and refund the debited coins. The guarded
+   * updateMany (status must still be PENDING) makes racing reviews lose
+   * cleanly instead of double-refunding.
+   */
   rejectWithRefund(id: string, reviewerId: string, note: string | null): Promise<RedemptionWithUser> {
     return this.prisma.$transaction(async (tx) => {
-      const redemption = await tx.redemption.update({
-        where: { id },
+      const marked = await tx.redemption.updateMany({
+        where: { id, status: "PENDING" },
         data: { status: "REJECTED", note, reviewedById: reviewerId, reviewedAt: new Date() },
-        include: USER_SELECT,
+      });
+      if (marked.count === 0) {
+        throw new ConflictError("Redemption has already been reviewed");
+      }
+      const redemption = await tx.redemption.findUniqueOrThrow({
+        where: { id },
+        include: INCLUDE_ALL,
       });
 
       const wallet = await tx.wallet.upsert({
@@ -88,26 +112,43 @@ export class RedemptionsRepository {
     });
   }
 
-  /** Review/fulfil state changes that don't touch the wallet. */
-  update(
+  /**
+   * Review/fulfil state changes that don't touch the wallet, guarded so the
+   * row must still be in one of `fromStatuses` — a racing update loses with a
+   * conflict instead of clobbering.
+   */
+  async guardedUpdate(
     id: string,
-    data: Prisma.RedemptionUncheckedUpdateInput,
+    fromStatuses: RedemptionStatus[],
+    data: Prisma.RedemptionUncheckedUpdateManyInput,
   ): Promise<RedemptionWithUser> {
-    return this.prisma.redemption.update({ where: { id }, data, include: USER_SELECT });
+    const marked = await this.prisma.redemption.updateMany({
+      where: { id, status: { in: fromStatuses } },
+      data,
+    });
+    if (marked.count === 0) {
+      throw new ConflictError("Redemption has already been reviewed");
+    }
+    return this.prisma.redemption.findUniqueOrThrow({ where: { id }, include: INCLUDE_ALL });
   }
 
   listByUser(
     userId: string,
-    params: { skip: number; take: number },
-  ): Promise<[Redemption[], number]> {
+    params: { skip: number; take: number; status?: RedemptionStatus },
+  ): Promise<[RedemptionWithOffer[], number]> {
+    const where: Prisma.RedemptionWhereInput = {
+      userId,
+      ...(params.status ? { status: params.status } : {}),
+    };
     return Promise.all([
       this.prisma.redemption.findMany({
-        where: { userId },
+        where,
         skip: params.skip,
         take: params.take,
         orderBy: { createdAt: "desc" },
+        include: { voucherOffer: OFFER_SELECT },
       }),
-      this.prisma.redemption.count({ where: { userId } }),
+      this.prisma.redemption.count({ where }),
     ]);
   }
 
@@ -136,9 +177,41 @@ export class RedemptionsRepository {
         skip: params.skip,
         take: params.take,
         orderBy: { createdAt: "desc" },
-        include: USER_SELECT,
+        include: INCLUDE_ALL,
       }),
       this.prisma.redemption.count({ where }),
     ]);
+  }
+
+  // ---- Voucher catalog ----
+
+  listOffers(activeOnly: boolean): Promise<VoucherOffer[]> {
+    return this.prisma.voucherOffer.findMany({
+      where: activeOnly ? { isActive: true } : {},
+      orderBy: [{ sortOrder: "asc" }, { coinCost: "asc" }],
+    });
+  }
+
+  findOfferById(id: string): Promise<VoucherOffer | null> {
+    return this.prisma.voucherOffer.findUnique({ where: { id } });
+  }
+
+  createOffer(data: Prisma.VoucherOfferUncheckedCreateInput): Promise<VoucherOffer> {
+    return this.prisma.voucherOffer.create({ data });
+  }
+
+  updateOffer(id: string, data: Prisma.VoucherOfferUncheckedUpdateInput): Promise<VoucherOffer> {
+    return this.prisma.voucherOffer.update({ where: { id }, data });
+  }
+
+  /** Hard delete only when nothing references the offer; else 409 — deactivate instead. */
+  async deleteOffer(id: string): Promise<void> {
+    const used = await this.prisma.redemption.count({ where: { voucherOfferId: id } });
+    if (used > 0) {
+      throw new ConflictError(
+        "This offer has redemptions attached — deactivate it instead of deleting",
+      );
+    }
+    await this.prisma.voucherOffer.delete({ where: { id } });
   }
 }

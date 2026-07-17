@@ -1,13 +1,15 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { success } from "../../../common/response.js";
-import type { PaginationQuery } from "../../../common/pagination.js";
 import type { RedemptionsService } from "../services/redemptions.service.js";
 import type {
   AdminListRedemptionsQuery,
   CreateRedemptionInput,
+  CreateVoucherOfferInput,
   FulfillRedemptionInput,
   IdParams,
+  ListMineQuery,
   ReviewRedemptionInput,
+  UpdateVoucherOfferInput,
 } from "../schemas/redemptions.schema.js";
 
 export class RedemptionsController {
@@ -26,11 +28,41 @@ export class RedemptionsController {
   };
 
   listMine = async (
-    request: FastifyRequest<{ Querystring: PaginationQuery }>,
+    request: FastifyRequest<{ Querystring: ListMineQuery }>,
     reply: FastifyReply,
   ): Promise<void> => {
     const { items, meta } = await this.service.listMine(request.user.sub, request.query);
     reply.send(success(items, meta));
+  };
+
+  catalog = async (_request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    reply.send(success(await this.service.listCatalog()));
+  };
+
+  catalogAdmin = async (_request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    reply.send(success(await this.service.listCatalogAdmin()));
+  };
+
+  createOffer = async (
+    request: FastifyRequest<{ Body: CreateVoucherOfferInput }>,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    reply.status(201).send(success(await this.service.createOffer(request.body)));
+  };
+
+  updateOffer = async (
+    request: FastifyRequest<{ Params: IdParams; Body: UpdateVoucherOfferInput }>,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    reply.send(success(await this.service.updateOffer(request.params.id, request.body)));
+  };
+
+  deleteOffer = async (
+    request: FastifyRequest<{ Params: IdParams }>,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    await this.service.deleteOffer(request.params.id);
+    reply.status(204).send();
   };
 
   listAdmin = async (

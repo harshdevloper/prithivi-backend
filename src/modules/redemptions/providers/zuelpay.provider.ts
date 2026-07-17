@@ -40,8 +40,8 @@ export class ZuelPayProvider implements VoucherProvider {
           authorization: `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify({
-          brand_id: this.brandId,
-          amount: params.coins,
+          brand_id: params.brandId ?? this.brandId,
+          amount: params.amount,
           quantity: 1,
           ref_id: params.redemptionId, // ZuelPay idempotency reference
           recipient_email: params.userEmail,

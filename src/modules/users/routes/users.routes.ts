@@ -63,4 +63,17 @@ export const usersRoutes = async (app: FastifyInstance): Promise<void> => {
     },
     controller.applyReferral,
   );
+
+  app.get(
+    "/me/referrals",
+    {
+      preHandler: [authGuard],
+      schema: {
+        tags: ["users"],
+        summary: "My referral stats: friends joined, coins earned, code applied",
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    controller.referralStats,
+  );
 };

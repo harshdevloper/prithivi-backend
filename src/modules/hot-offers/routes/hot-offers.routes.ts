@@ -87,6 +87,18 @@ export const hotOffersRoutes = async (app: FastifyInstance): Promise<void> => {
     controller.getOffer,
   );
 
+  app.get<{ Params: SlugParams }>(
+    "/offers/:slug/comment",
+    {
+      schema: {
+        tags: ["hot-offers"],
+        summary: "Newly generated suggested review comment for a published offer",
+        params: slugParamsSchema,
+      },
+    },
+    controller.getOfferComment,
+  );
+
   app.post<{ Body: TrackEventInput }>(
     "/events",
     {
