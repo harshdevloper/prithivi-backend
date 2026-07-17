@@ -1,9 +1,10 @@
-import type { Queue } from "bullmq";
+import type { FastifyInstance } from "fastify";
 import { ForbiddenError, NotFoundError } from "../../../common/errors.js";
 import { buildMeta, type PaginationQuery } from "../../../common/pagination.js";
 import type { PageMeta } from "../../../common/response.js";
 import type { NotificationsRepository } from "../repositories/notifications.repository.js";
-import { DEFAULT_JOB_OPTIONS, type NotificationJob } from "../queues/notification.queue.js";
+import type { NotificationJob } from "../queues/notification.queue.js";
+import { dispatchAndForget } from "./notification-dispatcher.js";
 import {
   toNotificationDto,
   toPushLogCreateData,
@@ -18,29 +19,28 @@ import {
 export class NotificationsService {
   constructor(
     private readonly notifications: NotificationsRepository,
-    private readonly queue: Queue,
+    private readonly app: FastifyInstance,
   ) {}
 
-  /** Fire-and-forget: delivery (DB persist + push) happens in the BullMQ worker. */
+  /** Fire-and-forget: delivery (DB persist + push) runs in-process; failures
+   *  are logged and never propagate into the calling business flow. */
   async enqueue(job: NotificationJob): Promise<void> {
-    await this.queue.add("notify", job, DEFAULT_JOB_OPTIONS);
+    dispatchAndForget(this.app, job);
   }
 
   /**
    * Admin sender: single user, arbitrary topic, or broadcast to every active
-   * user. Records a PushLog row (the send history) and supports scheduling
-   * via a delayed queue job.
+   * user. Records a PushLog row (the send history). Immediate sends dispatch
+   * in-process right away; scheduled sends stay SCHEDULED and the scheduler
+   * poller (src/workers/index.ts) delivers them when due.
    */
   async send(input: SendNotificationInput, sentById: string): Promise<{ queued: true; id: string }> {
     const log = await this.notifications.createPushLog(toPushLogCreateData({ ...input, sentById }));
 
-    const delay = input.scheduledAt
-      ? Math.max(0, new Date(input.scheduledAt).getTime() - Date.now())
-      : 0;
-
-    await this.queue.add(
-      "notify",
-      {
+    const dueInFuture =
+      input.scheduledAt !== undefined && new Date(input.scheduledAt).getTime() > Date.now();
+    if (!dueInFuture) {
+      dispatchAndForget(this.app, {
         audience: input.audience,
         userId: input.userId,
         topic: input.topic,
@@ -52,9 +52,8 @@ export class NotificationsService {
         data: input.data,
         silent: input.silent,
         pushLogId: log.id,
-      } satisfies NotificationJob,
-      { ...DEFAULT_JOB_OPTIONS, delay },
-    );
+      } satisfies NotificationJob);
+    }
     return { queued: true, id: log.id };
   }
 

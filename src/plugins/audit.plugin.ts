@@ -1,8 +1,6 @@
 import fp from "fastify-plugin";
 import type { FastifyInstance } from "fastify";
-import type { Queue } from "bullmq";
-import { createQueue } from "../utils/queue.js";
-import { AUDIT, QUEUES } from "../config/constants.js";
+import { AUDIT } from "../config/constants.js";
 
 export interface AuditJob {
   userId?: string;
@@ -15,21 +13,13 @@ export interface AuditJob {
   userAgent?: string;
 }
 
-declare module "fastify" {
-  interface FastifyInstance {
-    auditQueue: Queue;
-  }
-}
-
 /**
  * Audit trail as a cross-cutting concern: every authenticated mutating request
- * is enqueued (fire-and-forget) and persisted by the BullMQ audit worker —
- * zero changes to business services, no latency added to responses.
+ * is persisted fire-and-forget straight to Postgres (the Redis queue that used
+ * to buffer these was removed) — zero changes to business services, no latency
+ * added to responses.
  */
 export default fp(async (app: FastifyInstance) => {
-  const queue = createQueue(QUEUES.AUDIT);
-  app.decorate("auditQueue", queue);
-
   app.addHook("onResponse", (request, reply, done) => {
     const method = request.method.toUpperCase();
     const url = request.routeOptions.url ?? request.url;
@@ -49,14 +39,10 @@ export default fp(async (app: FastifyInstance) => {
         ip: request.ip,
         userAgent: request.headers["user-agent"],
       };
-      queue
-        .add("audit", job, { removeOnComplete: 1_000, removeOnFail: 1_000, attempts: 2 })
-        .catch((error) => app.log.warn({ err: error }, "failed to enqueue audit entry"));
+      app.prisma.auditLog
+        .create({ data: job })
+        .catch((error) => app.log.warn({ err: error }, "failed to persist audit entry"));
     }
     done();
-  });
-
-  app.addHook("onClose", async () => {
-    await queue.close();
   });
 });
