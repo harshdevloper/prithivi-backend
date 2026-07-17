@@ -38,7 +38,7 @@ export default fp(async (app: FastifyInstance) => {
   }
 
   if (!serviceAccount) {
-    app.log.warn("Firebase service account not set — /auth/firebase disabled");
+    app.log.warn("Firebase is service account not set — /auth/firebase disabled");
     return;
   }
 
