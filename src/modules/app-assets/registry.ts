@@ -26,6 +26,13 @@ export const ASSET_SLOTS: readonly AssetSlot[] = [
     description: "Transparent promo art on the home screen.",
   },
   {
+    key: "homeBanner",
+    page: "Home",
+    label: "Home banner",
+    description:
+      "Full-width banner above the Feedback Zone card on the home screen (PNG/GIF/JPG). No bundled default — leave empty to hide it.",
+  },
+  {
     key: "feedbackPromo",
     page: "Home",
     label: "Feedback Zone promo",

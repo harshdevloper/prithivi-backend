@@ -478,27 +478,53 @@ model SubmissionImage {
 /// debited up-front (refunded on rejection); the voucher is issued via the
 /// configured provider or entered manually by a super admin.
 model Redemption {
-  id           String           @id @default(uuid())
-  userId       String
-  coins        Decimal          @db.Decimal(12, 2) // amount debited from the wallet
-  status       RedemptionStatus @default(PENDING)
-  provider     String? // "zuelpay" | "manual"
-  voucherCode  String?
-  voucherUrl   String?
-  providerRef  String? // provider transaction id (e.g. ZuelPay txn_id)
-  note         String? // admin note set at review time
-  failReason   String? // last provider error (status APPROVED = queued for manual)
-  reviewedById String?
-  reviewedAt   DateTime?
-  createdAt    DateTime         @default(now())
-  updatedAt    DateTime         @updatedAt
+  id             String           @id @default(uuid())
+  userId         String
+  coins          Decimal          @db.Decimal(12, 2) // amount debited from the wallet
+  status         RedemptionStatus @default(PENDING)
+  provider       String? // "zuelpay" | "manual"
+  voucherCode    String?
+  voucherUrl     String?
+  providerRef    String? // provider transaction id (e.g. ZuelPay txn_id)
+  note           String? // admin note set at review time
+  failReason     String? // last provider error (status APPROVED = queued for manual)
+  voucherOfferId String? // catalog item this redemption is for (null = legacy amount-only)
+  reviewedById   String?
+  reviewedAt     DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
 
-  user       User  @relation("RedemptionUser", fields: [userId], references: [id], onDelete: Cascade)
-  reviewedBy User? @relation("RedemptionReviewer", fields: [reviewedById], references: [id])
+  user         User          @relation("RedemptionUser", fields: [userId], references: [id], onDelete: Cascade)
+  reviewedBy   User?         @relation("RedemptionReviewer", fields: [reviewedById], references: [id])
+  voucherOffer VoucherOffer? @relation(fields: [voucherOfferId], references: [id])
 
   @@index([userId])
   @@index([status])
   @@map("redemptions")
+}
+
+/// Admin-curated voucher catalog shown in the app's coupon store. When the
+/// ZuelPay provider is configured, providerBrandId + denomination drive the
+/// auto-issue call; otherwise redemptions fall back to manual fulfillment.
+model VoucherOffer {
+  id              String   @id @default(uuid())
+  title           String
+  brand           String // display brand, e.g. "Amazon"
+  description     String?
+  imageUrl        String?
+  coinCost        Int // coins debited from the wallet
+  denomination    Decimal  @db.Decimal(12, 2) // voucher face value (currency)
+  provider        String   @default("manual") // "zuelpay" | "manual"
+  providerBrandId String? // ZuelPay brand_id when provider = "zuelpay"
+  isActive        Boolean  @default(true)
+  sortOrder       Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  redemptions Redemption[]
+
+  @@index([isActive, sortOrder])
+  @@map("voucher_offers")
 }
 
 /// A logged suspicious event contributing to a user's fraud score.

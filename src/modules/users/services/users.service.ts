@@ -131,12 +131,17 @@ export class UsersService {
 
     const rewardPoints = await this.settings.getNumber("referral.rewardPoints");
 
-    // Mark the caller referred + credit the referrer atomically.
+    // Mark the caller referred + credit the referrer atomically. The guarded
+    // updateMany (referredById still null) makes concurrent applies lose the
+    // race and roll back their credit instead of double-crediting.
     await this.prisma.$transaction(async (tx) => {
-      await tx.user.update({
-        where: { id: caller.id },
+      const marked = await tx.user.updateMany({
+        where: { id: caller.id, referredById: null },
         data: { referredById: referrer.id, referredAt: new Date() },
       });
+      if (marked.count === 0) {
+        throw new ConflictError("A referral code has already been applied");
+      }
 
       const wallet = await tx.wallet.upsert({
         where: { userId: referrer.id },
@@ -161,13 +166,41 @@ export class UsersService {
       });
     });
 
-    await this.notifications.enqueue({
-      userId: referrer.id,
-      type: "WALLET",
-      title: "Referral bonus",
-      body: `You earned ${rewardPoints} for inviting ${caller.name}`,
-    });
+    // Best-effort: a Redis outage must not 500 an already-applied referral.
+    try {
+      await this.notifications.enqueue({
+        userId: referrer.id,
+        type: "WALLET",
+        title: "Referral bonus",
+        body: `You earned ${rewardPoints} for inviting ${caller.name}`,
+      });
+    } catch {
+      /* push is best-effort */
+    }
 
     return { applied: true, rewardPoints };
+  }
+
+  /** Sharer-facing referral stats + whether this user already applied a code.
+   *  Also backfills a missing referralCode so Share & Earn always has one. */
+  async getReferralStats(
+    userId: string,
+  ): Promise<{
+    referralCode: string | null;
+    referredCount: number;
+    coinsEarned: number;
+    hasApplied: boolean;
+  }> {
+    const [user, stats] = await Promise.all([
+      this.users.findById(userId),
+      this.users.referralStats(userId),
+    ]);
+    if (!user) throw new NotFoundError("User not found");
+    const withCode = await this.users.ensureReferralCode(user);
+    return {
+      ...stats,
+      referralCode: withCode.referralCode,
+      hasApplied: withCode.referredById !== null,
+    };
   }
 }

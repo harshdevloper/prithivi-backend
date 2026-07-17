@@ -49,6 +49,13 @@ export class HotOffersController {
     reply.send(success(await this.service.getPublicOffer(request.params.slug)));
   };
 
+  getOfferComment = async (
+    request: FastifyRequest<{ Params: SlugParams }>,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    reply.send(success(await this.service.getOfferReviewComment(request.params.slug)));
+  };
+
   trackEvent = async (
     request: FastifyRequest<{ Body: TrackEventInput }>,
     reply: FastifyReply,

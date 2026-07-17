@@ -7,8 +7,11 @@ export class VoucherProviderError extends Error {
 }
 
 export interface IssueVoucherParams {
-  /** Coin amount being redeemed — passed 1:1 as the voucher amount. */
-  coins: number;
+  /** Voucher face value: the catalog denomination, or coins 1:1 for legacy
+   *  amount-only redemptions. */
+  amount: number;
+  /** Catalog-item brand id; falls back to the provider's default brand. */
+  brandId?: string;
   userEmail: string;
   /** Our redemption id — sent as the provider's idempotency reference. */
   redemptionId: string;

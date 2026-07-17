@@ -147,6 +147,7 @@ export const buildContainer = (app: FastifyInstance): Container => {
   const missionsService = new MissionsService(prisma, notificationsService);
   const gameService = new GameService(prisma, settingsService, notificationsService);
   const adminService = new AdminService(
+    prisma,
     usersRepository,
     campaignRepository,
     claimsRepository,

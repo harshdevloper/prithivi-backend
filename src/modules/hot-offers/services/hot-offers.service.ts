@@ -38,6 +38,7 @@ import {
   type SubmitProofInput,
 } from "../schemas/submissions.schema.js";
 import { fetchAndHashImage } from "./image-hash.js";
+import { generateReviewComment } from "./review-comments.js";
 
 const RANGE_CONFIG = {
   daily: { days: 14, bucket: "day" },
@@ -78,6 +79,13 @@ export class HotOffersService {
     const offer = await this.repo.findOfferBySlug(slug, true);
     if (!offer) throw new NotFoundError("Offer not found");
     return toOfferDetailsDto(offer);
+  }
+
+  /** A newly generated suggested review comment for a published offer. */
+  async getOfferReviewComment(slug: string): Promise<{ comment: string }> {
+    const offer = await this.repo.findOfferBySlug(slug, true);
+    if (!offer) throw new NotFoundError("Offer not found");
+    return { comment: generateReviewComment(offer.appName ?? offer.title) };
   }
 
   // ---- public: event tracking ----

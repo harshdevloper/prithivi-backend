@@ -174,6 +174,25 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     description: "Base URL of the reward-hub web app the in-app web zone opens.",
     default: "http://localhost:5174/",
   },
+  // --- Social ---
+  {
+    key: "social.telegramUrl",
+    type: "STRING",
+    category: "Social",
+    label: "Telegram channel/group URL",
+    description:
+      "URL opened by the app Join Telegram card on the home screen. Leave empty to hide the card.",
+    default: "",
+  },
+  {
+    key: "social.linkedinUrl",
+    type: "STRING",
+    category: "Social",
+    label: "LinkedIn page URL",
+    description:
+      "URL opened by the app Follow LinkedIn card on the home screen. Leave empty to hide the card.",
+    default: "",
+  },
   // --- Levels (progression is driven by lifetime coins earned) ---
   {
     key: "levels.curve",

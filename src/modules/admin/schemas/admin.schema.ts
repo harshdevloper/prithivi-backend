@@ -6,6 +6,13 @@ export const adminStatsSchema = z.object({
   pendingClaims: z.number(),
   approvedClaims: z.number(),
   totalWalletBalance: z.number(),
+  // Live-economy review queues + referral reach:
+  pendingSubmissions: z.number(),
+  pendingRedemptions: z.number(),
+  coinsInPendingRedemptions: z.number(),
+  fulfilledRedemptions: z.number(),
+  pendingMissionCompletions: z.number(),
+  totalReferrals: z.number(),
 });
 export type AdminStats = z.infer<typeof adminStatsSchema>;
 

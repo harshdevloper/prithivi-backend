@@ -61,15 +61,56 @@ export class UsersRepository {
       }
     }
 
-    const user = await this.prisma.user.update({
-      where: { id: existing.id },
-      data: {
-        firebaseUid: profile.firebaseUid,
-        avatarUrl: profile.avatarUrl ?? existing.avatarUrl,
-      },
-    });
-    // A pre-created row (e.g. email-invited) that never signed in counts as new.
-    return { user, isNewUser: existing.firebaseUid === null };
+    // Backfill referralCode for rows created before the referral feature —
+    // otherwise Share & Earn is permanently disabled for them.
+    for (;;) {
+      try {
+        const user = await this.prisma.user.update({
+          where: { id: existing.id },
+          data: {
+            firebaseUid: profile.firebaseUid,
+            avatarUrl: profile.avatarUrl ?? existing.avatarUrl,
+            ...(existing.referralCode ? {} : { referralCode: generateReferralCode() }),
+          },
+        });
+        // A pre-created row (e.g. email-invited) that never signed in counts as new.
+        return { user, isNewUser: existing.firebaseUid === null };
+      } catch (error) {
+        if (!isReferralCodeCollision(error)) throw error;
+      }
+    }
+  }
+
+  /** Generates and saves a referralCode for a user that has none (pre-feature
+   *  rows whose session predates the sign-in backfill). Returns the user. */
+  async ensureReferralCode(user: User): Promise<User> {
+    if (user.referralCode) return user;
+    for (;;) {
+      try {
+        return await this.prisma.user.update({
+          where: { id: user.id },
+          data: { referralCode: generateReferralCode() },
+        });
+      } catch (error) {
+        if (!isReferralCodeCollision(error)) throw error;
+      }
+    }
+  }
+
+  /** How many users this user referred + the coins credited for them. */
+  async referralStats(userId: string): Promise<{ referredCount: number; coinsEarned: number }> {
+    const [referredCount, credited] = await Promise.all([
+      this.prisma.user.count({ where: { referredById: userId } }),
+      this.prisma.walletTransaction.aggregate({
+        where: {
+          type: "CREDIT",
+          wallet: { userId },
+          reference: { startsWith: "referral:" },
+        },
+        _sum: { amount: true },
+      }),
+    ]);
+    return { referredCount, coinsEarned: Number(credited._sum.amount ?? 0) };
   }
 
   update(id: string, data: Prisma.UserUpdateInput): Promise<User> {
