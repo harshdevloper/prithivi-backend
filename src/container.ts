@@ -27,6 +27,7 @@ import { VoucherProviderRegistry } from "./modules/redemptions/providers/voucher
 import { AppAssetsService } from "./modules/app-assets/services/app-assets.service.js";
 import { MissionsService } from "./modules/missions/services/missions.service.js";
 import { GameService } from "./modules/game/services/game.service.js";
+import { RouletteService } from "./modules/roulette/services/roulette.service.js";
 
 import { AuthController } from "./modules/auth/controllers/auth.controller.js";
 import { UsersController } from "./modules/users/controllers/users.controller.js";
@@ -43,6 +44,7 @@ import { RedemptionsController } from "./modules/redemptions/controllers/redempt
 import { AppAssetsController } from "./modules/app-assets/controllers/app-assets.controller.js";
 import { MissionsController } from "./modules/missions/controllers/missions.controller.js";
 import { GameController } from "./modules/game/controllers/game.controller.js";
+import { RouletteController } from "./modules/roulette/controllers/roulette.controller.js";
 import { env } from "./config/env.js";
 
 export interface Container {
@@ -64,6 +66,7 @@ export interface Container {
   appAssetsService: AppAssetsService;
   missionsService: MissionsService;
   gameService: GameService;
+  rouletteService: RouletteService;
 
   // controllers
   authController: AuthController;
@@ -81,6 +84,7 @@ export interface Container {
   appAssetsController: AppAssetsController;
   missionsController: MissionsController;
   gameController: GameController;
+  rouletteController: RouletteController;
 }
 
 declare module "fastify" {
@@ -154,6 +158,7 @@ export const buildContainer = (app: FastifyInstance): Container => {
   const appAssetsService = new AppAssetsService(prisma);
   const missionsService = new MissionsService(prisma, notificationsService);
   const gameService = new GameService(prisma, settingsService, notificationsService);
+  const rouletteService = new RouletteService(prisma, settingsService, notificationsService);
   const adminService = new AdminService(
     prisma,
     usersRepository,
@@ -179,6 +184,7 @@ export const buildContainer = (app: FastifyInstance): Container => {
     appAssetsService,
     missionsService,
     gameService,
+    rouletteService,
 
     authController: new AuthController(authService),
     usersController: new UsersController(usersService),
@@ -195,5 +201,6 @@ export const buildContainer = (app: FastifyInstance): Container => {
     appAssetsController: new AppAssetsController(appAssetsService),
     missionsController: new MissionsController(missionsService),
     gameController: new GameController(gameService),
+    rouletteController: new RouletteController(rouletteService),
   };
 };

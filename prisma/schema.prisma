@@ -104,6 +104,26 @@ enum GameMatchStatus {
   DRAW
 }
 
+/// Bet types the roulette engine can settle. The five required types ship now;
+/// the engine's resolver map makes LOW/HIGH/DOZEN/COLUMN a small future add.
+enum RouletteBetType {
+  ODD
+  EVEN
+  RED
+  BLACK
+  NUMBER
+}
+
+enum RouletteRoundStatus {
+  SETTLED
+  VOID
+}
+
+enum RouletteProbabilityMode {
+  FAIR
+  WEIGHTED
+}
+
 model User {
   id        String   @id @default(uuid())
   email       String   @unique
@@ -138,6 +158,7 @@ model User {
   reviewedRedemptions Redemption[]      @relation("RedemptionReviewer")
   gameMatches         GameMatch[]
   missionCompletions  MissionCompletion[]
+  rouletteRounds      RouletteRound[]
 
   @@map("users")
 }
@@ -585,6 +606,70 @@ model GameMatch {
 
   @@index([userId, createdAt])
   @@map("game_matches")
+}
+
+/// A global, versioned probability configuration for the roulette wheel. FAIR =
+/// every number 0..36 equally likely. WEIGHTED = `numberWeights` (a 37-length
+/// integer array indexed by number) biases outcomes. Only one row is `active`;
+/// each round snapshots the active config so historical rounds never change.
+/// Rows are effectively immutable once a round references them.
+model RouletteProbabilityProfile {
+  id            String                  @id @default(uuid())
+  name          String
+  mode          RouletteProbabilityMode @default(WEIGHTED)
+  numberWeights Json // int[37]; ignored when mode = FAIR
+  estimatedRtp  Decimal                 @db.Decimal(6, 4) // e.g. 0.9730
+  active        Boolean                 @default(false)
+  effectiveFrom DateTime                @default(now())
+  createdById   String?
+  createdAt     DateTime                @default(now())
+
+  rounds RouletteRound[]
+
+  @@index([active])
+  @@map("roulette_probability_profiles")
+}
+
+/// One roulette spin — the bet, the server-decided result, the wallet outcome,
+/// and the provably-fair seed data. Created and settled atomically in a single
+/// request, so `status` is SETTLED for every real play. `configSnapshot` freezes
+/// the payouts + probability weights used, and `idempotencyKey` (unique per
+/// user) makes a duplicate tap / retry return the same round instead of a new one.
+model RouletteRound {
+  id             String              @id @default(uuid())
+  userId         String
+  betType        RouletteBetType
+  selectedNumber Int? // set only for NUMBER bets (0..36)
+  betAmount      Decimal             @db.Decimal(12, 2) // effective stake used for payout
+  usedFreeGame   Boolean             @default(false)
+  winningNumber  Int
+  winningColour  String // RED | BLACK | GREEN
+  parity         String // ODD | EVEN | NONE (0 is NONE)
+  won            Boolean
+  payoutMultiplier Int // profit "X to 1" multiplier applied (0 on loss)
+  payoutAmount   Decimal             @db.Decimal(12, 2) // total credited on win (0 on loss)
+  netResult      Decimal             @db.Decimal(12, 2) // payout - stake (paid) / payout (free); can be negative
+  status         RouletteRoundStatus @default(SETTLED)
+  probabilityMode RouletteProbabilityMode
+  configSnapshot Json // { payouts, minBet, maxBet, weights?, profileId? } frozen at bet time
+  probabilityProfileId String?
+  serverSeed     String // revealed after settlement (single-request play)
+  serverSeedHash String // sha256(serverSeed), committed on the round
+  clientSeed     String
+  nonce          Int                 @default(0)
+  idempotencyKey String
+  createdAt      DateTime            @default(now())
+  settledAt      DateTime?
+
+  user    User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  profile RouletteProbabilityProfile? @relation(fields: [probabilityProfileId], references: [id])
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@index([winningNumber])
+  @@index([betType])
+  @@map("roulette_rounds")
 }
 
 model Mission {
