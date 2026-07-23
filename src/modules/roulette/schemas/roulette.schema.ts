@@ -53,14 +53,18 @@ export const estimateRtpSchema = z.object({
 });
 export type EstimateRtpInput = z.infer<typeof estimateRtpSchema>;
 
+// Query params are strings; z.coerce.boolean() treats "false" as true, so parse
+// the literal instead.
+const boolParam = z.enum(["true", "false"]).transform((v) => v === "true");
+
 export const roundsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
   userId: z.string().uuid().optional(),
   betType: z.enum(["ODD", "EVEN", "RED", "BLACK", "NUMBER"]).optional(),
   winningNumber: z.coerce.number().int().min(0).max(36).optional(),
-  won: z.coerce.boolean().optional(),
-  usedFreeGame: z.coerce.boolean().optional(),
+  won: boolParam.optional(),
+  usedFreeGame: boolParam.optional(),
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
   minAmount: z.coerce.number().int().min(0).optional(),
