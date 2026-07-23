@@ -14,6 +14,7 @@ import { redemptionsRoutes } from "../modules/redemptions/routes/redemptions.rou
 import { appAssetsRoutes } from "../modules/app-assets/routes/app-assets.routes.js";
 import { missionsRoutes } from "../modules/missions/routes/missions.routes.js";
 import { gameRoutes } from "../modules/game/routes/game.routes.js";
+import { rouletteRoutes } from "../modules/roulette/routes/roulette.routes.js";
 import { env } from "../config/env.js";
 
 export const registerRoutes = async (app: FastifyInstance): Promise<void> => {
@@ -54,6 +55,7 @@ export const registerRoutes = async (app: FastifyInstance): Promise<void> => {
       await api.register(appAssetsRoutes, { prefix: "/app-assets" });
       await api.register(missionsRoutes, { prefix: "/missions" });
       await api.register(gameRoutes, { prefix: "/game" });
+      await api.register(rouletteRoutes, { prefix: "/game" });
     },
     { prefix: env.API_PREFIX },
   );
