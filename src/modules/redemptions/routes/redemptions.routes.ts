@@ -123,6 +123,35 @@ export const redemptionsRoutes = async (app: FastifyInstance): Promise<void> => 
     controller.fulfill,
   );
 
+  // ---- reward provider (Xoxoday) admin ----
+
+  app.get(
+    "/admin/provider/status",
+    {
+      preHandler: [authGuard, adminOnly],
+      schema: {
+        tags: ["redemptions"],
+        summary: "Xoxoday reward-provider configuration status (no secrets) (admin)",
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    controller.providerStatus,
+  );
+
+  app.post(
+    "/admin/provider/test",
+    {
+      preHandler: [authGuard, superAdminOnly],
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["redemptions"],
+        summary: "Test the configured Xoxoday credentials (super admin)",
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    controller.providerTest,
+  );
+
   // ---- voucher catalog admin ----
 
   app.get(

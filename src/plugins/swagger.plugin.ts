@@ -14,8 +14,8 @@ export default fp(async (app: FastifyInstance) => {
   await app.register(swagger, {
     openapi: {
       info: {
-        title: "RewardHub API",
-        description: "RewardHub backend API documentation",
+        title: "Money Marathon API",
+        description: "Money Marathon backend API documentation",
         version: "0.1.0",
       },
       servers: [{ url: `http://localhost:${env.PORT}` }],

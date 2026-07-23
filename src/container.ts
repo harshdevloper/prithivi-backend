@@ -23,7 +23,7 @@ import { UploadsService } from "./modules/uploads/services/uploads.service.js";
 import { HotOffersService } from "./modules/hot-offers/services/hot-offers.service.js";
 import { SettingsService } from "./modules/settings/services/settings.service.js";
 import { RedemptionsService } from "./modules/redemptions/services/redemptions.service.js";
-import { ZuelPayProvider } from "./modules/redemptions/providers/zuelpay.provider.js";
+import { VoucherProviderRegistry } from "./modules/redemptions/providers/voucher-provider-registry.js";
 import { AppAssetsService } from "./modules/app-assets/services/app-assets.service.js";
 import { MissionsService } from "./modules/missions/services/missions.service.js";
 import { GameService } from "./modules/game/services/game.service.js";
@@ -44,7 +44,6 @@ import { AppAssetsController } from "./modules/app-assets/controllers/app-assets
 import { MissionsController } from "./modules/missions/controllers/missions.controller.js";
 import { GameController } from "./modules/game/controllers/game.controller.js";
 import { env } from "./config/env.js";
-
 
 export interface Container {
   // queues
@@ -112,12 +111,28 @@ export const buildContainer = (app: FastifyInstance): Container => {
   // queues
 
   // services
-  const authService = new AuthService(app, usersRepository, refreshTokenRepository, walletRepository);
+  const authService = new AuthService(
+    app,
+    usersRepository,
+    refreshTokenRepository,
+    walletRepository,
+  );
   const notificationsService = new NotificationsService(notificationsRepository, app);
   const settingsService = new SettingsService(settingsRepository);
-  const usersService = new UsersService(prisma, usersRepository, settingsService, notificationsService);
+  const usersService = new UsersService(
+    prisma,
+    usersRepository,
+    settingsService,
+    notificationsService,
+    app,
+  );
   const campaignService = new CampaignService(campaignRepository, notificationsService);
-  const claimsService = new ClaimsService(prisma, claimsRepository, campaignRepository, notificationsService);
+  const claimsService = new ClaimsService(
+    prisma,
+    claimsRepository,
+    campaignRepository,
+    notificationsService,
+  );
   const walletService = new WalletService(walletRepository);
   const analyticsService = new AnalyticsService(analyticsRepository);
   const uploadsService = new UploadsService();
@@ -126,15 +141,15 @@ export const buildContainer = (app: FastifyInstance): Container => {
     notificationsService,
     settingsService,
   );
-  // ZuelPay only when credentials exist — otherwise manual-fulfillment mode.
-  const voucherProvider = env.ZUELPAY_API_KEY
-    ? new ZuelPayProvider(env.ZUELPAY_BASE_URL, env.ZUELPAY_API_KEY, env.ZUELPAY_BRAND_ID)
-    : null;
+  // Providers are resolved per redemption from admin settings (env is the
+  // fallback), so credentials can change without a redeploy. Not configured
+  // => manual-fulfillment mode.
+  const voucherProviders = new VoucherProviderRegistry(settingsService);
   const redemptionsService = new RedemptionsService(
     redemptionsRepository,
     settingsService,
     notificationsService,
-    voucherProvider,
+    voucherProviders,
   );
   const appAssetsService = new AppAssetsService(prisma);
   const missionsService = new MissionsService(prisma, notificationsService);
@@ -149,7 +164,6 @@ export const buildContainer = (app: FastifyInstance): Container => {
   );
 
   return {
-
     authService,
     usersService,
     campaignService,

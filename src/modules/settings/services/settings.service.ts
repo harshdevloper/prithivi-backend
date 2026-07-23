@@ -58,27 +58,37 @@ export class SettingsService {
     const overrides = await this.overrides();
     return SETTINGS_REGISTRY.map((definition) => {
       const override = overrides.get(definition.key);
+      const resolved = override ?? definition.default;
+      const secret = definition.secret === true;
       return {
         key: definition.key,
-        value: override ?? definition.default,
+        // Secrets are write-only: never leak the stored credential over the API.
+        value: secret ? "" : resolved,
         type: definition.type,
         category: definition.category,
         label: definition.label,
         description: definition.description,
         isDefault: override === undefined,
+        secret,
+        hasValue: resolved.trim().length > 0,
       } satisfies SettingDto;
     });
   }
 
   async update(input: UpdateSettingsInput, updatedById: string | undefined): Promise<SettingDto[]> {
-    const entries = Object.entries(input.values).map(([key, value]) => {
-      const definition = SETTINGS_BY_KEY[key];
-      if (!definition) throw new BadRequestError(`Unknown setting "${key}"`);
-      return { key, value: this.coerce(definition, value) };
-    });
+    const entries = Object.entries(input.values)
+      .filter(([key, value]) => {
+        const definition = SETTINGS_BY_KEY[key];
+        if (!definition) throw new BadRequestError(`Unknown setting "${key}"`);
+        // A blank secret submission means "keep the existing value".
+        return !(definition.secret === true && value.trim() === "");
+      })
+      .map(([key, value]) => ({ key, value: this.coerce(SETTINGS_BY_KEY[key], value) }));
 
-    await this.repo.upsertMany(entries, updatedById);
-    this.cache = null; // force reload on next read within this process
+    if (entries.length > 0) {
+      await this.repo.upsertMany(entries, updatedById);
+      this.cache = null; // force reload on next read within this process
+    }
     return this.list();
   }
 

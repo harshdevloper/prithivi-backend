@@ -2,16 +2,22 @@ import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "admin@rewardhub.local";
-const ADMIN_NAME = process.env.ADMIN_NAME ?? "RewardHub Admin";
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "admin@moneymarathon.local";
+const ADMIN_NAME = process.env.ADMIN_NAME ?? "Money Marathon Admin";
 
 /** Idempotent Hot Offers content so every layer has data to render in dev. */
 const seedHotOffers = async (): Promise<void> => {
+  await prisma.setting.upsert({
+    where: { key: "web.baseUrl" },
+    create: { key: "web.baseUrl", value: "https://moneymarathon.in/" },
+    update: { value: "https://moneymarathon.in/" },
+  });
+
   const categories = [
     {
       slug: "feedback-zone",
-      title: "Feedback Zone",
-      subtitle: "Test apps, share feedback, earn rewards",
+      title: "Reward Zone",
+      subtitle: "Complete eligible tasks and submit proof for rewards",
       priority: 100,
       featured: true,
     },
@@ -39,7 +45,7 @@ const seedHotOffers = async (): Promise<void> => {
     await prisma.offerCategory.upsert({
       where: { slug: category.slug },
       create: { ...category, status: "PUBLISHED" },
-      update: {},
+      update: category,
     });
   }
 
@@ -51,21 +57,29 @@ const seedHotOffers = async (): Promise<void> => {
     where: { categoryId: feedbackZone.id },
     create: {
       categoryId: feedbackZone.id,
-      title: "Feedback Zone",
+      title: "Reward Zone",
       description:
-        "Install hand-picked apps, use them for a few minutes and share your honest " +
-        "feedback. Every completed review earns you reward points.",
+        "Complete eligible app tasks and upload clear proof. Approved submissions earn the " +
+        "reward shown on each live offer.",
       benefits: [
-        "Fresh offers added every week",
-        "Rewards credited after review",
-        "No purchase required",
+        "Offers come from the live backend",
+        "Rewards credited after proof review",
+        "Instructions shown before you start",
       ],
       rewardPoints: 500,
-      buttonText: "Explore offers",
-      websiteUrl: "http://localhost:5174/", // dev URL of rewardhub/web; replace in prod
+      buttonText: "Explore rewards",
+      websiteUrl: "https://moneymarathon.in/rewards",
       status: "PUBLISHED",
     },
-    update: {},
+    update: {
+      title: "Reward Zone",
+      description:
+        "Complete eligible app tasks and upload clear proof. Approved submissions earn the " +
+        "reward shown on each live offer.",
+      buttonText: "Explore rewards",
+      websiteUrl: "https://moneymarathon.in/rewards",
+      status: "PUBLISHED",
+    },
   });
 
   const gaming = await prisma.offerCategory.findUniqueOrThrow({
@@ -115,8 +129,10 @@ const seedHotOffers = async (): Promise<void> => {
   for (const offer of offers) {
     await prisma.offer.upsert({
       where: { slug: offer.slug },
-      create: { ...offer, status: "PUBLISHED" },
-      update: {},
+      // Examples remain available to developers in the admin panel but can
+      // never appear as live user offers after a seed run.
+      create: { ...offer, status: "DRAFT" },
+      update: { status: "DRAFT" },
     });
   }
 

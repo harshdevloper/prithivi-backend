@@ -5,7 +5,7 @@ import type { NotificationsService } from "../../notifications/services/notifica
 import type { NotificationJob } from "../../notifications/queues/notification.queue.js";
 import type { SettingsService } from "../../settings/services/settings.service.js";
 import type { RedemptionsRepository } from "../repositories/redemptions.repository.js";
-import type { VoucherProvider } from "../providers/voucher-provider.js";
+import type { VoucherProviderRegistry } from "../providers/voucher-provider-registry.js";
 import {
   toRedemptionDto,
   toVoucherOfferDto,
@@ -26,8 +26,9 @@ export class RedemptionsService {
     private readonly repo: RedemptionsRepository,
     private readonly settings: SettingsService,
     private readonly notifications: NotificationsService,
-    /** null = manual-fulfillment mode (no provider credentials configured). */
-    private readonly provider: VoucherProvider | null,
+    /** Resolves the voucher provider per catalog item from current settings;
+     *  returns null (manual fulfillment) when Xoxoday isn't configured. */
+    private readonly providers: VoucherProviderRegistry,
   ) {}
 
   async getConfig(): Promise<RedemptionConfigDto> {
@@ -36,6 +37,16 @@ export class RedemptionsService {
       this.settings.getNumber("redeem.minCoins"),
     ]);
     return { enabled, minCoins };
+  }
+
+  /** Admin: current Xoxoday reward-provider status (never returns secrets). */
+  providerStatus(): ReturnType<VoucherProviderRegistry["status"]> {
+    return this.providers.status();
+  }
+
+  /** Admin "Test connection": verify the configured Xoxoday credentials. */
+  testProvider(): ReturnType<VoucherProviderRegistry["test"]> {
+    return this.providers.test();
   }
 
   /** User requests a redemption: coins are debited immediately (escrow). */
@@ -128,22 +139,24 @@ export class RedemptionsService {
       reviewedAt: new Date(),
     });
 
-    // A catalog item explicitly marked manual skips the provider even when
-    // one is configured; legacy amount-only rows use the provider default.
+    // A catalog item marked "manual" skips auto-issue even when Xoxoday is
+    // configured; a Xoxoday item dispatches to its provider ("plum" = reward
+    // link, "xoxo_code" = gift-card code). Legacy amount-only rows keep the
+    // historical behavior of using the reward-link provider + default campaign.
     const offer = approved.voucherOfferId
       ? await this.repo.findOfferById(approved.voucherOfferId)
       : null;
-    const useProvider =
-      this.provider !== null && (offer ? offer.provider === this.provider.name : true);
-    if (!useProvider) return toRedemptionDto(approved, true);
+    const providerName = offer ? offer.provider : "plum";
+    const provider = await this.providers.resolve(providerName);
+    if (!provider) return toRedemptionDto(approved, true);
 
     // Only the provider call may be treated as a provider failure — once a
     // voucher is issued, real money exists and must never be silently lost.
     let voucher;
     try {
-      voucher = await this.provider!.issueVoucher({
+      voucher = await provider.issueVoucher({
         amount: offer ? Number(offer.denomination) : Number(approved.coins),
-        brandId: offer?.providerBrandId ?? undefined,
+        campaignId: offer?.providerBrandId ?? undefined,
         userEmail: approved.user.email,
         redemptionId: approved.id,
       });
@@ -151,7 +164,7 @@ export class RedemptionsService {
       // Provider failed — keep the approval, queue for manual fulfillment.
       const reason = error instanceof Error ? error.message : String(error);
       const parked = await this.repo.guardedUpdate(id, ["APPROVED"], {
-        provider: this.provider!.name,
+        provider: provider.name,
         failReason: reason.slice(0, 1000),
       });
       return toRedemptionDto(parked, true);
@@ -160,8 +173,8 @@ export class RedemptionsService {
     try {
       const fulfilled = await this.repo.guardedUpdate(id, ["APPROVED"], {
         status: "FULFILLED",
-        provider: this.provider!.name,
-        voucherCode: voucher.code,
+        provider: provider.name,
+        voucherCode: voucher.code ?? null,
         voucherUrl: voucher.url ?? null,
         providerRef: voucher.ref ?? null,
         failReason: null,
@@ -174,15 +187,15 @@ export class RedemptionsService {
       // code in failReason on whatever state the row is in so an admin can
       // reconcile instead of paying out twice.
       console.error(
-        `[redemptions] issued voucher NOT persisted for redemption ${id}: ` +
-          `code=${voucher.code}${voucher.ref ? ` ref=${voucher.ref}` : ""} — reconcile manually`,
+        `[redemptions] issued reward NOT persisted for redemption ${id}` +
+          `${voucher.ref ? ` ref=${voucher.ref}` : ""} — reconcile manually`,
         persistError,
       );
       try {
         const parked = await this.repo.guardedUpdate(id, ["APPROVED", "FULFILLED"], {
           failReason:
-            `Auto-issued voucher needs reconciliation: code=${voucher.code}` +
-            `${voucher.ref ? ` ref=${voucher.ref}` : ""}`.slice(0, 1000),
+            (`Auto-issued reward needs reconciliation` +
+            `${voucher.ref ? `: ref=${voucher.ref}` : ""}`).slice(0, 1000),
         });
         return toRedemptionDto(parked, true);
       } catch {

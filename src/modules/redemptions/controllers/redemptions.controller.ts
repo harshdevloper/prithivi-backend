@@ -96,4 +96,12 @@ export class RedemptionsController {
     );
     reply.send(success(redemption));
   };
+
+  providerStatus = async (_request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    reply.send(success(await this.service.providerStatus()));
+  };
+
+  providerTest = async (_request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    reply.send(success(await this.service.testProvider()));
+  };
 }
