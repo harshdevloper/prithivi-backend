@@ -340,7 +340,7 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     category: "Roulette",
     label: "Wheel animation duration (ms)",
     description: "How long the wheel+ball animation runs before revealing the result.",
-    default: "6000",
+    default: "3500",
     min: 1000,
     max: 20000,
   },

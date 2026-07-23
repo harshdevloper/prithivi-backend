@@ -712,56 +712,75 @@ export class RouletteService {
   async analytics(from?: string, to?: string): Promise<RouletteAnalyticsDto> {
     const fromDate = from ? new Date(from) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const toDate = to ? new Date(to) : new Date();
+    const where: Prisma.RouletteRoundWhereInput = {
+      createdAt: { gte: fromDate, lte: toDate },
+      status: "SETTLED",
+    };
 
-    const rows = await this.prisma.rouletteRound.findMany({
-      where: { createdAt: { gte: fromDate, lte: toDate }, status: "SETTLED" },
-      select: {
-        userId: true,
-        betAmount: true,
-        payoutAmount: true,
-        netResult: true,
-        usedFreeGame: true,
-        won: true,
-        winningNumber: true,
-        createdAt: true,
-      },
-    });
+    // Everything aggregates inside Postgres — no rounds are streamed into
+    // memory — so this stays fast with millions of rounds / 100K+ users.
+    const [
+      totalAgg,
+      paidAgg,
+      lostAgg,
+      winCount,
+      playerRows,
+      numberGroups,
+      mostActiveGroups,
+      topWinRows,
+      recentRows,
+      dailyRows,
+    ] = await Promise.all([
+      this.prisma.rouletteRound.aggregate({ where, _count: true, _sum: { payoutAmount: true } }),
+      this.prisma.rouletteRound.aggregate({
+        where: { ...where, usedFreeGame: false },
+        _count: true,
+        _sum: { betAmount: true },
+      }),
+      this.prisma.rouletteRound.aggregate({
+        where: { ...where, usedFreeGame: false, won: false },
+        _sum: { betAmount: true },
+      }),
+      this.prisma.rouletteRound.count({ where: { ...where, won: true } }),
+      this.prisma.$queryRaw<{ count: number }[]>`
+        SELECT COUNT(DISTINCT "userId")::int AS count
+        FROM "roulette_rounds"
+        WHERE "createdAt" >= ${fromDate} AND "createdAt" <= ${toDate} AND "status" = 'SETTLED'`,
+      this.prisma.rouletteRound.groupBy({ by: ["winningNumber"], where, _count: true }),
+      this.prisma.rouletteRound.groupBy({
+        by: ["userId"],
+        where,
+        _count: true,
+        orderBy: { _count: { userId: "desc" } },
+        take: 5,
+      }),
+      this.prisma.rouletteRound.findMany({
+        where: { ...where, won: true },
+        orderBy: { payoutAmount: "desc" },
+        take: 10,
+        select: { id: true, userId: true, payoutAmount: true, winningNumber: true, createdAt: true },
+      }),
+      this.prisma.rouletteRound.findMany({ where, orderBy: { createdAt: "desc" }, take: 10 }),
+      this.prisma.$queryRaw<{ date: string; games: number; wagered: number; won: number }[]>`
+        SELECT to_char(date_trunc('day', "createdAt"), 'YYYY-MM-DD') AS date,
+               COUNT(*)::int AS games,
+               COALESCE(SUM(CASE WHEN "usedFreeGame" THEN 0 ELSE "betAmount" END), 0)::float AS wagered,
+               COALESCE(SUM("payoutAmount"), 0)::float AS won
+        FROM "roulette_rounds"
+        WHERE "createdAt" >= ${fromDate} AND "createdAt" <= ${toDate} AND "status" = 'SETTLED'
+        GROUP BY 1 ORDER BY 1`,
+    ]);
+
+    const games = totalAgg._count;
+    const coinsWon = num(totalAgg._sum.payoutAmount);
+    const paidGames = paidAgg._count;
+    const coinsWagered = num(paidAgg._sum.betAmount);
+    const coinsLost = num(lostAgg._sum.betAmount);
+    const freeGames = games - paidGames;
+    const players = Number(playerRows[0]?.count ?? 0);
 
     const numberCounts = new Array(37).fill(0) as number[];
-    const players = new Set<string>();
-    const perUser = new Map<string, number>();
-    const perDay = new Map<string, { games: number; wagered: number; won: number }>();
-    let coinsWagered = 0;
-    let coinsWon = 0;
-    let coinsLost = 0;
-    let freeGames = 0;
-    let paidGames = 0;
-    let wins = 0;
-
-    for (const r of rows) {
-      const bet = num(r.betAmount);
-      const pay = num(r.payoutAmount);
-      numberCounts[r.winningNumber] += 1;
-      players.add(r.userId);
-      perUser.set(r.userId, (perUser.get(r.userId) ?? 0) + 1);
-      coinsWon += pay;
-      if (r.usedFreeGame) {
-        freeGames += 1;
-      } else {
-        paidGames += 1;
-        coinsWagered += bet;
-        if (!r.won) coinsLost += bet;
-      }
-      if (r.won) wins += 1;
-      const day = r.createdAt.toISOString().slice(0, 10);
-      const d = perDay.get(day) ?? { games: 0, wagered: 0, won: 0 };
-      d.games += 1;
-      d.wagered += r.usedFreeGame ? 0 : bet;
-      d.won += pay;
-      perDay.set(day, d);
-    }
-
-    const games = rows.length;
+    for (const g of numberGroups) numberCounts[g.winningNumber] = g._count;
     const numberDistribution = numberCounts.map((count, number) => ({ number, count }));
     const parityDistribution = numberCounts.reduce(
       (acc, count, n) => {
@@ -783,31 +802,17 @@ export class RouletteService {
       { red: 0, black: 0, green: 0 },
     );
 
-    const [topWinRows, recentRows] = await Promise.all([
-      this.prisma.rouletteRound.findMany({
-        where: { createdAt: { gte: fromDate, lte: toDate }, won: true },
-        orderBy: { payoutAmount: "desc" },
-        take: 10,
-        select: { id: true, userId: true, payoutAmount: true, winningNumber: true, createdAt: true },
-      }),
-      this.prisma.rouletteRound.findMany({
-        where: { createdAt: { gte: fromDate, lte: toDate } },
-        orderBy: { createdAt: "desc" },
-        take: 10,
-      }),
-    ]);
-
     return {
       totals: {
         games,
-        players: players.size,
-        activePlayers: players.size,
+        players,
+        activePlayers: players,
         coinsWagered,
         coinsWon,
         coinsLost,
         netCoinMovement: coinsWon - coinsWagered,
         averageBet: paidGames > 0 ? Math.round((coinsWagered / paidGames) * 100) / 100 : 0,
-        winRate: games > 0 ? Math.round((wins / games) * 10000) / 10000 : 0,
+        winRate: games > 0 ? Math.round((winCount / games) * 10000) / 10000 : 0,
         rtp: coinsWagered > 0 ? Math.round((coinsWon / coinsWagered) * 10000) / 10000 : 0,
         freeGames,
         paidGames,
@@ -815,9 +820,12 @@ export class RouletteService {
       numberDistribution,
       parityDistribution,
       colourDistribution,
-      daily: [...perDay.entries()]
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([date, v]) => ({ date, ...v })),
+      daily: dailyRows.map((d) => ({
+        date: d.date,
+        games: Number(d.games),
+        wagered: Number(d.wagered),
+        won: Number(d.won),
+      })),
       topWins: topWinRows.map((r) => ({
         roundId: r.id,
         userId: r.userId,
@@ -825,10 +833,7 @@ export class RouletteService {
         winningNumber: r.winningNumber,
         createdAt: r.createdAt.toISOString(),
       })),
-      mostActive: [...perUser.entries()]
-        .sort(([, a], [, b]) => b - a)
-        .slice(0, 5)
-        .map(([userId, count]) => ({ userId, games: count })),
+      mostActive: mostActiveGroups.map((g) => ({ userId: g.userId, games: g._count })),
       recentRounds: recentRows.map((r) => this.toRoundDto(r, false)),
     };
   }
