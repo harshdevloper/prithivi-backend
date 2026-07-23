@@ -63,7 +63,7 @@ export const createVoucherOfferSchema = z.object({
   imageUrl: z.string().url().max(2048).nullish(),
   coinCost: z.number().int().positive().max(1_000_000),
   denomination: z.number().positive().max(1_000_000),
-  provider: z.enum(["manual", "zuelpay"]).default("manual"),
+  provider: z.enum(["manual", "plum", "xoxo_code"]).default("manual"),
   providerBrandId: z.string().max(100).nullish(),
   isActive: z.boolean().default(true),
   sortOrder: z.number().int().min(-1_000_000).max(1_000_000).default(0),

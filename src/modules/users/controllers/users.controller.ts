@@ -23,6 +23,11 @@ export class UsersController {
     reply.send(success(profile));
   };
 
+  deleteMe = async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    await this.usersService.deleteAccount(request.user.sub);
+    reply.send(success({ deleted: true }));
+  };
+
   applyReferral = async (
     request: FastifyRequest<{ Body: ApplyReferralInput }>,
     reply: FastifyReply,

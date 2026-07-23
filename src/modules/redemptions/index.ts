@@ -4,4 +4,7 @@ export * from "./controllers/redemptions.controller.js";
 export * from "./routes/redemptions.routes.js";
 export * from "./schemas/redemptions.schema.js";
 export * from "./providers/voucher-provider.js";
-export * from "./providers/zuelpay.provider.js";
+export * from "./providers/xoxoday-base.provider.js";
+export * from "./providers/xoxoday-plum.provider.js";
+export * from "./providers/xoxoday-code.provider.js";
+export * from "./providers/voucher-provider-registry.js";

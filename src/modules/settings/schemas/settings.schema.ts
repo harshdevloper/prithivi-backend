@@ -12,6 +12,9 @@ export interface SettingDefinition {
   min?: number; // NUMBER only — admin-side hint + server clamp
   max?: number;
   enum?: readonly string[]; // STRING only — allowed values
+  /** Write-only credential: its value is never returned by the API; an empty
+   *  submission means "keep the existing value". */
+  secret?: boolean;
 }
 
 /**
@@ -57,6 +60,89 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     default: "100",
     min: 1,
     max: 1_000_000,
+  },
+  // --- Reward provider: Xoxoday Plum (coins -> gift-card codes / reward links) ---
+  {
+    key: "xoxoday.enabled",
+    type: "BOOLEAN",
+    category: "Reward Providers",
+    label: "Xoxoday enabled",
+    description:
+      "Master switch for auto-issuing Xoxoday vouchers on redemption approval. When off (or credentials missing), approved Xoxoday redemptions queue for manual fulfillment.",
+    default: "true",
+  },
+  {
+    key: "xoxoday.baseUrl",
+    type: "STRING",
+    category: "Reward Providers",
+    label: "Xoxoday API base URL",
+    description:
+      "Plum OAuth API base, e.g. https://accounts.xoxoday.com/chef/v1/oauth (production) or the staging equivalent. Leave blank to use the server default.",
+    default: "",
+  },
+  {
+    key: "xoxoday.accessToken",
+    type: "STRING",
+    category: "Reward Providers",
+    label: "Xoxoday access token",
+    description: "OAuth access token. Presence of this token is what enables auto-issue.",
+    default: "",
+    secret: true,
+  },
+  {
+    key: "xoxoday.refreshToken",
+    type: "STRING",
+    category: "Reward Providers",
+    label: "Xoxoday refresh token",
+    description:
+      "OAuth refresh token (rotates on use). Needed with client id/secret so an expired access token can auto-refresh.",
+    default: "",
+    secret: true,
+  },
+  {
+    key: "xoxoday.clientId",
+    type: "STRING",
+    category: "Reward Providers",
+    label: "Xoxoday client ID",
+    description: "OAuth client id used for the refresh-token flow.",
+    default: "",
+  },
+  {
+    key: "xoxoday.clientSecret",
+    type: "STRING",
+    category: "Reward Providers",
+    label: "Xoxoday client secret",
+    description: "OAuth client secret used for the refresh-token flow.",
+    default: "",
+    secret: true,
+  },
+  {
+    key: "xoxoday.defaultProductId",
+    type: "STRING",
+    category: "Reward Providers",
+    label: "Default gift-card product/SKU ID",
+    description:
+      "Fallback Plum product/SKU id used for gift-card-code vouchers when a catalog item doesn't set its own.",
+    default: "",
+  },
+  {
+    key: "xoxoday.defaultCampaignId",
+    type: "STRING",
+    category: "Reward Providers",
+    label: "Default reward-link campaign ID",
+    description:
+      "Fallback Plum campaign id used for reward-link vouchers when a catalog item doesn't set its own.",
+    default: "",
+  },
+  {
+    key: "xoxoday.linkExpiryDays",
+    type: "NUMBER",
+    category: "Reward Providers",
+    label: "Reward-link expiry (days)",
+    description: "How long a generated Plum reward link stays claimable.",
+    default: "90",
+    min: 1,
+    max: 3650,
   },
   // --- Referrals ---
   {
@@ -171,8 +257,8 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     type: "STRING",
     category: "Web",
     label: "Web base URL",
-    description: "Base URL of the reward-hub web app the in-app web zone opens.",
-    default: "http://localhost:5174/",
+    description: "Base URL of the Money Marathon web experience opened in-app.",
+    default: "https://moneymarathon.in/",
   },
   // --- Social ---
   {
@@ -228,6 +314,11 @@ export interface SettingDto {
   label: string;
   description: string;
   isDefault: boolean;
+  /** True for write-only credential fields (value is never returned). */
+  secret: boolean;
+  /** Whether a non-empty value is stored — lets the UI show "configured"
+   *  for secrets without exposing them. */
+  hasValue: boolean;
 }
 
 export const updateSettingsSchema = z.object({

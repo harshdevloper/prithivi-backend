@@ -29,8 +29,8 @@ const envSchema = z.object({
   JWT_SECRET: z.string().min(1),
   JWT_ACCESS_EXPIRES_IN: z.string().default("15m"),
   JWT_REFRESH_EXPIRES_IN: z.string().default("7d"),
-  JWT_ISSUER: z.string().default("rewardhub"),
-  JWT_AUDIENCE: z.string().default("rewardhub-clients"),
+  JWT_ISSUER: z.string().default("money-marathon"),
+  JWT_AUDIENCE: z.string().default("money-marathon-clients"),
 
   // Firebase Admin (verifies Firebase ID tokens — the only auth provider).
   // Provide ONE of: a path to the service-account JSON, or the JSON itself
@@ -47,12 +47,18 @@ const envSchema = z.object({
   RATE_LIMIT_MAX: z.coerce.number().default(100),
   RATE_LIMIT_WINDOW: z.string().default("1 minute"),
 
-  // ZuelPay gift-voucher provider (redemptions). Leave ZUELPAY_API_KEY unset
-  // to run redemptions in manual-fulfillment mode (admin enters codes).
-  ZUELPAY_BASE_URL: z.string().default("https://api.zuelpay.com/v2"),
-  ZUELPAY_API_KEY: z.string().optional(),
-  /** ZuelPay brand to issue vouchers for (their API requires a brand_id). */
-  ZUELPAY_BRAND_ID: z.string().default("AMAZON"),
+  // Xoxoday Plum Reward Links. Leave ACCESS_TOKEN unset to run redemptions in
+  // manual-fulfillment mode. Sandbox base:
+  // https://stagingstores.xoxoday.com/chef/v1/oauth
+  XOXODAY_BASE_URL: z.string().url().default("https://accounts.xoxoday.com/chef/v1/oauth"),
+  XOXODAY_ACCESS_TOKEN: z.string().optional(),
+  XOXODAY_REFRESH_TOKEN: z.string().optional(),
+  XOXODAY_CLIENT_ID: z.string().optional(),
+  XOXODAY_CLIENT_SECRET: z.string().optional(),
+  XOXODAY_TOKEN_STATE_FILE: z.string().optional(),
+  /** Default Reward Link campaign; individual catalog items may override it. */
+  XOXODAY_CAMPAIGN_ID: z.string().default(""),
+  XOXODAY_LINK_EXPIRY_DAYS: z.coerce.number().int().min(1).max(3650).default(90),
 
   /** cloudinary://<api_key>:<api_secret>@<cloud_name> — falls back to local disk when unset. */
   CLOUDINARY_URL: z.string().optional(),

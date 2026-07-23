@@ -1,6 +1,8 @@
-# RewardHub Backend
+# Money Marathon Backend
 
-Fastify + TypeScript API for RewardHub. Fully implemented: Google authentication with JWT + rotating refresh tokens, role-based access control, campaigns, claims with wallet payouts, queued notifications and analytics (BullMQ), and Swagger docs.
+Fastify + TypeScript API for Money Marathon, including Firebase authentication,
+wallet rewards, offers/proof review, Xoxoday Plum Reward Links, notifications,
+redemptions, admin CMS and Swagger documentation.
 
 ## Requirements
 
@@ -35,17 +37,29 @@ See [.env.example](.env.example). Key ones:
 | `REDIS_URL` | Redis connection string (BullMQ + caching) |
 | `JWT_SECRET` | Signing key for access tokens |
 | `JWT_ACCESS_EXPIRES_IN` / `JWT_REFRESH_EXPIRES_IN` | Token lifetimes (`15m`, `7d`) |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth credentials |
+| `FIREBASE_SERVICE_ACCOUNT` / `FIREBASE_PROJECT_ID` | Firebase Admin authentication |
+| `XOXODAY_*` | Plum Reward Link credentials, campaign and token refresh |
 | `ADMIN_EMAIL` | Email seeded as SUPER_ADMIN |
 
 ## Authentication
 
-Google-only sign-in with two flows:
+The mobile app signs in with Firebase/Google and exchanges the Firebase ID token
+at `POST /api/v1/auth/firebase`. The API returns `{ accessToken, refreshToken,
+user }`. Access tokens are short-lived JWTs; refresh tokens are opaque, hashed
+in the database and single-use.
 
-1. **ID-token flow** (mobile/SPA): the client obtains a Google ID token and posts it to `POST /api/v1/auth/google`.
-2. **Redirect flow** (browser): visit `GET /api/v1/auth/google/redirect`; Google calls back `GET /api/v1/auth/google/callback`.
+## Xoxoday Plum Reward Links
 
-Both return `{ accessToken, refreshToken, user }`. Access tokens are short-lived JWTs; refresh tokens are opaque, stored hashed, and **single-use** — `POST /auth/refresh` rotates them. `POST /auth/logout` revokes one token, `POST /auth/logout-all` revokes every session.
+Create a Reward Link campaign in Plum, copy its campaign ID into a voucher
+catalog item in the admin panel (or `XOXODAY_CAMPAIGN_ID` as the default), and
+configure the server-only `XOXODAY_*` variables. Approving a Plum catalog
+redemption calls `xoxo_link.mutation.generateLink` and stores the returned claim
+URL plus Plum batch ID. Test with the staging base URL before switching to the
+production account URL. Xoxoday also requires the server IP to be whitelisted.
+Because Plum rotates refresh tokens, set `XOXODAY_TOKEN_STATE_FILE` to a path
+on a private persistent disk (for example `/var/data/xoxoday-tokens.json`). The
+backend writes the latest access/refresh pair atomically with owner-only file
+permissions so restarts do not reuse an invalidated environment token.
 
 Roles: `USER`, `ADMIN`, `SUPER_ADMIN`. Admin routes require `ADMIN`+; only a `SUPER_ADMIN` can manage other super admins.
 

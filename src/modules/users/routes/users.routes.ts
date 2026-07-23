@@ -50,6 +50,19 @@ export const usersRoutes = async (app: FastifyInstance): Promise<void> => {
     controller.updateMe,
   );
 
+  app.delete(
+    "/me",
+    {
+      preHandler: [authGuard],
+      schema: {
+        tags: ["users"],
+        summary: "Permanently delete my account and associated user data",
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    controller.deleteMe,
+  );
+
   app.post<{ Body: ApplyReferralInput }>(
     "/me/referral",
     {

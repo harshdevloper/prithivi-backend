@@ -1,8 +1,8 @@
 {
-  "name": "@rewardhub/backend",
+  "name": "@money-marathon/backend",
   "version": "0.1.0",
   "private": true,
-  "description": "RewardHub backend API (Fastify + TypeScript + Prisma)",
+  "description": "Money Marathon backend API (Fastify + TypeScript + Prisma)",
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",

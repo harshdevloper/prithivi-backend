@@ -10,15 +10,16 @@ export interface IssueVoucherParams {
   /** Voucher face value: the catalog denomination, or coins 1:1 for legacy
    *  amount-only redemptions. */
   amount: number;
-  /** Catalog-item brand id; falls back to the provider's default brand. */
-  brandId?: string;
+  /** Catalog-item Plum campaign ID; falls back to the provider default. */
+  campaignId?: string;
   userEmail: string;
   /** Our redemption id — sent as the provider's idempotency reference. */
   redemptionId: string;
 }
 
 export interface IssuedVoucher {
-  code: string;
+  /** Traditional voucher providers return a code; Plum Reward Links do not. */
+  code?: string;
   url?: string;
   /** Provider-side transaction id, stored as providerRef. */
   ref?: string;

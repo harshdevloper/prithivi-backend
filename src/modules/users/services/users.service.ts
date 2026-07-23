@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { ConflictError, NotFoundError } from "../../../common/errors.js";
+import type { FastifyInstance } from "fastify";
+import { AppError, ConflictError, ForbiddenError, NotFoundError } from "../../../common/errors.js";
 import type { UsersRepository } from "../repositories/users.repository.js";
 import type { SettingsService } from "../../settings/services/settings.service.js";
 import type { NotificationsService } from "../../notifications/services/notifications.service.js";
@@ -82,6 +83,7 @@ export class UsersService {
     private readonly users: UsersRepository,
     private readonly settings: SettingsService,
     private readonly notifications: NotificationsService,
+    private readonly app: FastifyInstance,
   ) {}
 
   async getProfile(userId: string): Promise<PublicUser> {
@@ -99,6 +101,62 @@ export class UsersService {
       ...(input.avatarUrl !== undefined ? { avatarUrl: input.avatarUrl } : {}),
     });
     return toPublicUser(updated);
+  }
+
+  /**
+   * Permanently deletes a consumer account and its associated activity.
+   * Reviewer references are nulled first because those relations deliberately
+   * use Restrict; user-owned rows then cascade from the User deletion.
+   */
+  async deleteAccount(userId: string): Promise<void> {
+    const user = await this.users.findById(userId);
+    if (!user) throw new NotFoundError("User not found");
+    if (user.role !== "USER") {
+      throw new ForbiddenError("Staff accounts must be transferred before deletion");
+    }
+
+    if (user.firebaseUid) {
+      if (!this.app.firebaseAuth) {
+        throw new AppError(
+          "Account deletion is temporarily unavailable",
+          503,
+          "FIREBASE_NOT_CONFIGURED",
+        );
+      }
+      try {
+        await this.app.firebaseAuth.deleteUser(user.firebaseUid);
+      } catch (error) {
+        if ((error as { code?: string }).code !== "auth/user-not-found") throw error;
+      }
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.updateMany({
+        where: { referredById: userId },
+        data: { referredById: null, referredAt: null },
+      });
+      await Promise.all([
+        tx.claim.updateMany({ where: { reviewedById: userId }, data: { reviewedById: null } }),
+        tx.offerSubmission.updateMany({
+          where: { reviewedById: userId },
+          data: { reviewedById: null },
+        }),
+        tx.redemption.updateMany({
+          where: { reviewedById: userId },
+          data: { reviewedById: null },
+        }),
+        tx.missionCompletion.updateMany({
+          where: { reviewedById: userId },
+          data: { reviewedById: null },
+        }),
+        tx.offerEvent.deleteMany({ where: { userId } }),
+        tx.auditLog.deleteMany({
+          where: { OR: [{ userId }, { userEmail: user.email }] },
+        }),
+        tx.pushLog.deleteMany({ where: { userId } }),
+      ]);
+      await tx.user.delete({ where: { id: userId } });
+    });
   }
 
   async getProgress(userId: string): Promise<ProgressDto> {
