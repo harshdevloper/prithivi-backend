@@ -32,6 +32,11 @@ enum TransactionType {
   DEBIT
 }
 
+enum CoinPurchaseStatus {
+  CREATED
+  CAPTURED
+}
+
 enum NotificationType {
   SYSTEM
   CAMPAIGN
@@ -125,40 +130,41 @@ enum RouletteProbabilityMode {
 }
 
 model User {
-  id        String   @id @default(uuid())
-  email       String   @unique
-  name        String
-  avatarUrl   String?
-  googleId    String?  @unique
-  firebaseUid String?  @unique
-  role        Role     @default(USER)
-  isActive  Boolean  @default(true)
+  id           String    @id @default(uuid())
+  email        String    @unique
+  name         String
+  avatarUrl    String?
+  googleId     String?   @unique
+  firebaseUid  String?   @unique
+  role         Role      @default(USER)
+  isActive     Boolean   @default(true)
   referralCode String?   @unique
   referredById String?
   referredAt   DateTime?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   referredBy User?  @relation("Referrals", fields: [referredById], references: [id])
   referrals  User[] @relation("Referrals")
 
-  wallet          Wallet?
-  refreshTokens   RefreshToken[]
-  claims          Claim[]
-  notifications   Notification[]
-  campaigns       Campaign[]     @relation("CampaignCreator")
-  reviewedClaims  Claim[]        @relation("ClaimReviewer")
-  analyticsEvents AnalyticsEvent[]
-  deviceTokens    DeviceToken[]
-  sentPushLogs    PushLog[]      @relation("PushLogSender")
-  offerSubmissions    OfferSubmission[] @relation("OfferSubmissionUser")
-  reviewedSubmissions OfferSubmission[] @relation("OfferSubmissionReviewer")
+  wallet              Wallet?
+  refreshTokens       RefreshToken[]
+  claims              Claim[]
+  notifications       Notification[]
+  campaigns           Campaign[]          @relation("CampaignCreator")
+  reviewedClaims      Claim[]             @relation("ClaimReviewer")
+  analyticsEvents     AnalyticsEvent[]
+  deviceTokens        DeviceToken[]
+  sentPushLogs        PushLog[]           @relation("PushLogSender")
+  offerSubmissions    OfferSubmission[]   @relation("OfferSubmissionUser")
+  reviewedSubmissions OfferSubmission[]   @relation("OfferSubmissionReviewer")
   fraudLogs           FraudLog[]
-  redemptions         Redemption[]      @relation("RedemptionUser")
-  reviewedRedemptions Redemption[]      @relation("RedemptionReviewer")
+  redemptions         Redemption[]        @relation("RedemptionUser")
+  reviewedRedemptions Redemption[]        @relation("RedemptionReviewer")
   gameMatches         GameMatch[]
   missionCompletions  MissionCompletion[]
   rouletteRounds      RouletteRound[]
+  coinPurchases       CoinPurchase[]
 
   @@map("users")
 }
@@ -249,6 +255,28 @@ model WalletTransaction {
 
   @@index([walletId, createdAt])
   @@map("wallet_transactions")
+}
+
+/// Razorpay-backed coin order. The immutable price/coin snapshot makes later
+/// admin rate changes safe, while unique provider ids make verification and
+/// wallet crediting idempotent.
+model CoinPurchase {
+  id                String             @id @default(uuid())
+  userId            String
+  razorpayOrderId   String             @unique
+  razorpayPaymentId String?            @unique
+  amountPaise       Int
+  coins             Int
+  packCount         Int
+  status            CoinPurchaseStatus @default(CREATED)
+  capturedAt        DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("coin_purchases")
 }
 
 model DeviceToken {
@@ -404,9 +432,9 @@ model FeedbackPage {
 
 /// One offer card on the website plus everything on its details page.
 model Offer {
-  id               String        @id @default(uuid())
+  id               String          @id @default(uuid())
   categoryId       String
-  slug             String        @unique
+  slug             String          @unique
   title            String
   appName          String?
   logoUrl          String?
@@ -419,26 +447,26 @@ model Offer {
   requirements     Json? // string[] ("Android 10+", "New users only", ...)
   terms            String?
   warning          String?
-  rewardAmount     Decimal       @db.Decimal(12, 2) // credited to the wallet when a proof is approved
-  rewardCoins      Int           @default(0) // display-layer gamification coins (not a second currency)
+  rewardAmount     Decimal         @db.Decimal(12, 2) // credited to the wallet when a proof is approved
+  rewardCoins      Int             @default(0) // display-layer gamification coins (not a second currency)
   rewardLabel      String? // free-form display, e.g. "Up to 150 + bonus"
   taskDescription  String? // the concrete task, e.g. "Reach level 5 within 3 days"
   difficulty       OfferDifficulty @default(EASY)
   estimatedTime    String? // e.g. "10 min"
-  rating           Decimal?      @db.Decimal(2, 1) // admin-set display rating 0.0-5.0
+  rating           Decimal?        @db.Decimal(2, 1) // admin-set display rating 0.0-5.0
   playStoreUrl     String
-  isProduct        Boolean       @default(false) // product offers surface on the app's Products tab
+  isProduct        Boolean         @default(false) // product offers surface on the app's Products tab
   brandLogoUrl     String? // brand mark shown on product cards
-  featured         Boolean       @default(false)
-  trending         Boolean       @default(false)
+  featured         Boolean         @default(false)
+  trending         Boolean         @default(false)
   expiresAt        DateTime? // hidden from public lists after this moment
   maxUsers         Int? // cap on distinct participants — enforced at submission (Module 4)
   maxRewards       Int? // cap on approved rewards — enforced at approval (Module 4)
   dailyLimit       Int? // per-user submissions per day — enforced at submission (Module 4)
-  priority         Int           @default(0)
-  status           ContentStatus @default(DRAFT)
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
+  priority         Int             @default(0)
+  status           ContentStatus   @default(DRAFT)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
   deletedAt        DateTime?
 
   category    OfferCategory     @relation(fields: [categoryId], references: [id], onDelete: Cascade)
@@ -466,9 +494,9 @@ model OfferSubmission {
   createdAt     DateTime         @default(now())
   updatedAt     DateTime         @updatedAt
 
-  offer      Offer @relation(fields: [offerId], references: [id], onDelete: Cascade)
-  user       User  @relation("OfferSubmissionUser", fields: [userId], references: [id], onDelete: Cascade)
-  reviewedBy User? @relation("OfferSubmissionReviewer", fields: [reviewedById], references: [id])
+  offer      Offer             @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  user       User              @relation("OfferSubmissionUser", fields: [userId], references: [id], onDelete: Cascade)
+  reviewedBy User?             @relation("OfferSubmissionReviewer", fields: [reviewedById], references: [id])
   images     SubmissionImage[]
   fraudLogs  FraudLog[]
 
@@ -610,24 +638,49 @@ model GameMatch {
 
 /// A global, versioned probability configuration for the roulette wheel. FAIR =
 /// every number 0..36 equally likely. WEIGHTED = `numberWeights` (a 37-length
-/// integer array indexed by number) biases outcomes. Only one row is `active`;
-/// each round snapshots the active config so historical rounds never change.
-/// Rows are effectively immutable once a round references them.
+/// integer array indexed by number) biases outcomes. Timed schedules select the
+/// live profile; `active`/`effectiveFrom` remain only for legacy API responses.
+/// Each round snapshots its resolved schedule/profile so history never changes.
 model RouletteProbabilityProfile {
   id            String                  @id @default(uuid())
   name          String
   mode          RouletteProbabilityMode @default(WEIGHTED)
   numberWeights Json // int[37]; ignored when mode = FAIR
-  estimatedRtp  Decimal                 @db.Decimal(6, 4) // e.g. 0.9730
+  estimatedRtp  Decimal                 @db.Decimal(12, 4) // e.g. 0.9730; supports high admin-configured payouts
   active        Boolean                 @default(false)
   effectiveFrom DateTime                @default(now())
   createdById   String?
   createdAt     DateTime                @default(now())
 
-  rounds RouletteRound[]
+  rounds    RouletteRound[]
+  schedules RouletteProbabilitySchedule[]
 
   @@index([active])
   @@map("roulette_probability_profiles")
+}
+
+/// An immutable, finite UTC window during which one probability profile is
+/// selected. Window semantics are half-open: startsAt <= now < endsAt.
+/// Cancellation is the only supported mutation. A PostgreSQL exclusion
+/// constraint in the migration prevents overlapping non-cancelled windows.
+model RouletteProbabilitySchedule {
+  id            String    @id @default(uuid())
+  profileId     String
+  startsAt      DateTime  @db.Timestamptz(3)
+  endsAt        DateTime  @db.Timestamptz(3)
+  reason        String
+  createdById   String?
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  cancelledAt   DateTime? @db.Timestamptz(3)
+  cancelledById String?
+  cancelReason  String?
+
+  profile RouletteProbabilityProfile @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  rounds  RouletteRound[]
+
+  @@index([startsAt, endsAt])
+  @@index([profileId, startsAt])
+  @@map("roulette_probability_schedules")
 }
 
 /// One roulette spin — the bet, the server-decided result, the wallet outcome,
@@ -636,39 +689,43 @@ model RouletteProbabilityProfile {
 /// the payouts + probability weights used, and `idempotencyKey` (unique per
 /// user) makes a duplicate tap / retry return the same round instead of a new one.
 model RouletteRound {
-  id             String              @id @default(uuid())
-  userId         String
-  betType        RouletteBetType
-  selectedNumber Int? // set only for NUMBER bets (0..36)
-  betAmount      Decimal             @db.Decimal(12, 2) // effective stake used for payout
-  usedFreeGame   Boolean             @default(false)
-  winningNumber  Int
-  winningColour  String // RED | BLACK | GREEN
-  parity         String // ODD | EVEN | NONE (0 is NONE)
-  won            Boolean
-  payoutMultiplier Int // profit "X to 1" multiplier applied (0 on loss)
-  payoutAmount   Decimal             @db.Decimal(12, 2) // total credited on win (0 on loss)
-  netResult      Decimal             @db.Decimal(12, 2) // payout - stake (paid) / payout (free); can be negative
-  status         RouletteRoundStatus @default(SETTLED)
-  probabilityMode RouletteProbabilityMode
-  configSnapshot Json // { payouts, minBet, maxBet, weights?, profileId? } frozen at bet time
-  probabilityProfileId String?
-  serverSeed     String // revealed after settlement (single-request play)
-  serverSeedHash String // sha256(serverSeed), committed on the round
-  clientSeed     String
-  nonce          Int                 @default(0)
-  idempotencyKey String
-  createdAt      DateTime            @default(now())
-  settledAt      DateTime?
+  id                    String                  @id @default(uuid())
+  userId                String
+  betType               RouletteBetType
+  selectedNumber        Int? // set only for NUMBER bets (0..36)
+  betAmount             Decimal                 @db.Decimal(12, 2) // effective stake used for payout
+  usedFreeGame          Boolean                 @default(false)
+  winningNumber         Int
+  winningColour         String // RED | BLACK | GREEN
+  parity                String // ODD | EVEN | NONE (0 is NONE)
+  won                   Boolean
+  payoutMultiplier      Int // profit "X to 1" multiplier applied (0 on loss)
+  payoutAmount          Decimal                 @db.Decimal(12, 2) // total credited on win (0 on loss)
+  netResult             Decimal                 @db.Decimal(12, 2) // payout - stake (paid) / payout (free); can be negative
+  status                RouletteRoundStatus     @default(SETTLED)
+  probabilityMode       RouletteProbabilityMode
+  configSnapshot        Json // { payouts, minBet, maxBet, weights?, profileId? } frozen at bet time
+  probabilityProfileId  String?
+  probabilityScheduleId String?
+  policyResolvedAt      DateTime                @default(now()) @db.Timestamptz(3)
+  serverSeed            String // revealed after settlement (single-request play)
+  serverSeedHash        String // sha256(serverSeed), committed on the round
+  clientSeed            String
+  nonce                 Int                     @default(0)
+  idempotencyKey        String
+  createdAt             DateTime                @default(now())
+  settledAt             DateTime?
 
-  user    User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  profile RouletteProbabilityProfile? @relation(fields: [probabilityProfileId], references: [id])
+  user     User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  profile  RouletteProbabilityProfile?  @relation(fields: [probabilityProfileId], references: [id])
+  schedule RouletteProbabilitySchedule? @relation(fields: [probabilityScheduleId], references: [id], onDelete: Restrict)
 
   @@unique([userId, idempotencyKey])
   @@index([userId, createdAt])
   @@index([createdAt])
   @@index([winningNumber])
   @@index([betType])
+  @@index([probabilityScheduleId])
   @@map("roulette_rounds")
 }
 

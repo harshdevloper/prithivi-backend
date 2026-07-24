@@ -56,14 +56,16 @@ export const parityOf = (n: number): Parity => {
  * HIGH (19..36), DOZEN or COLUMN later is a single entry here + a payout key.
  * Note 0 (green) loses every even-money bet: that is the house edge.
  */
-const WIN_RESOLVERS: Record<RouletteBetType, (winning: number, selected: number | null) => boolean> =
-  {
-    ODD: (w) => w !== 0 && w % 2 === 1,
-    EVEN: (w) => w !== 0 && w % 2 === 0,
-    RED: (w) => RED_NUMBERS.has(w),
-    BLACK: (w) => w !== 0 && !RED_NUMBERS.has(w),
-    NUMBER: (w, s) => s !== null && w === s,
-  };
+const WIN_RESOLVERS: Record<
+  RouletteBetType,
+  (winning: number, selected: number | null) => boolean
+> = {
+  ODD: (w) => w !== 0 && w % 2 === 1,
+  EVEN: (w) => w !== 0 && w % 2 === 0,
+  RED: (w) => RED_NUMBERS.has(w),
+  BLACK: (w) => w !== 0 && !RED_NUMBERS.has(w),
+  NUMBER: (w, s) => s !== null && w === s,
+};
 
 const profitMultiplierFor = (betType: RouletteBetType, m: PayoutMultipliers): number => {
   switch (betType) {
@@ -90,11 +92,19 @@ export interface SettleResult {
   parity: Parity;
 }
 
+export type PayoutCapacityLimit = "ZERO_PAYOUT" | "PER_GAME" | "DAILY";
+
+export interface PayoutCapacity {
+  eligible: boolean;
+  fullPayout: number;
+  limit: PayoutCapacityLimit | null;
+}
+
 /**
  * Settle a single bet against a winning number. `stake` is whole coins. Payout
  * is the TOTAL returned (profit + the stake back), so a paid win credits
- * `payout` after the stake was already debited. Caller applies any max-payout
- * cap and decides the wallet delta (paid vs free).
+ * `payout` after the stake was already debited. The caller verifies full-payout
+ * capacity before sampling and decides the wallet delta (paid vs free).
  */
 export const settleBet = (params: {
   betType: RouletteBetType;
@@ -115,13 +125,37 @@ export const settleBet = (params: {
   };
 };
 
+/**
+ * Determine whether this bet can be paid in full before RNG is sampled.
+ * Accepted bets therefore settle as either an exact configured win or a true
+ * loss; limits never create a zero-credit win or a partially applied multiplier.
+ */
+export const evaluatePayoutCapacity = (params: {
+  betType: RouletteBetType;
+  stake: number;
+  multipliers: PayoutMultipliers;
+  maxPayoutPerGame: number;
+  dailyPayoutRemaining: number;
+}): PayoutCapacity => {
+  const fullPayout = params.stake * (profitMultiplierFor(params.betType, params.multipliers) + 1);
+  if (!Number.isFinite(fullPayout) || fullPayout <= 0) {
+    return { eligible: false, fullPayout, limit: "ZERO_PAYOUT" };
+  }
+  if (fullPayout > params.maxPayoutPerGame) {
+    return { eligible: false, fullPayout, limit: "PER_GAME" };
+  }
+  if (fullPayout > params.dailyPayoutRemaining) {
+    return { eligible: false, fullPayout, limit: "DAILY" };
+  }
+  return { eligible: true, fullPayout, limit: null };
+};
+
 // ---- Provably-fair RNG ----
 
 /** 32 random bytes as hex — the per-round server seed. */
 export const newSeed = (): string => randomBytes(32).toString("hex");
 
-export const hashSeed = (seed: string): string =>
-  createHash("sha256").update(seed).digest("hex");
+export const hashSeed = (seed: string): string => createHash("sha256").update(seed).digest("hex");
 
 /**
  * Deterministic uniform in [0, 1) from (serverSeed, clientSeed, nonce) via

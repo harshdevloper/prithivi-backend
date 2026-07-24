@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ProbabilityScheduleStatus } from "../engine/probability-policy.js";
 import type {
   Colour,
   Parity,
@@ -46,6 +47,29 @@ export type ActivateProfileInput = z.infer<typeof activateProfileSchema>;
 
 export const profileIdParamsSchema = z.object({ id: z.string().uuid() });
 export type ProfileIdParams = z.infer<typeof profileIdParamsSchema>;
+
+const scheduleInstantSchema = z.string().datetime({ offset: true });
+
+export const createProbabilityScheduleSchema = z
+  .object({
+    profileId: z.string().uuid(),
+    startsAt: scheduleInstantSchema,
+    endsAt: scheduleInstantSchema,
+    reason: z.string().trim().min(1).max(500),
+  })
+  .refine((input) => new Date(input.endsAt).getTime() > new Date(input.startsAt).getTime(), {
+    message: "endsAt must be later than startsAt",
+    path: ["endsAt"],
+  });
+export type CreateProbabilityScheduleInput = z.infer<typeof createProbabilityScheduleSchema>;
+
+export const cancelProbabilityScheduleSchema = z.object({
+  reason: z.string().trim().min(1).max(500),
+});
+export type CancelProbabilityScheduleInput = z.infer<typeof cancelProbabilityScheduleSchema>;
+
+export const scheduleIdParamsSchema = z.object({ id: z.string().uuid() });
+export type ScheduleIdParams = z.infer<typeof scheduleIdParamsSchema>;
 
 export const estimateRtpSchema = z.object({
   mode: z.enum(["FAIR", "WEIGHTED"]),
@@ -176,6 +200,8 @@ export interface RouletteRoundDto {
   clientSeed: string;
   nonce: number;
   probabilityProfileId: string | null;
+  probabilityScheduleId: string | null;
+  policyResolvedAt: string;
   createdAt: string;
   settledAt: string | null;
 }
@@ -187,6 +213,8 @@ export interface VerifyRoundDto {
   clientSeed: string;
   nonce: number;
   probabilityMode: string;
+  probabilityScheduleId: string | null;
+  policyResolvedAt: string;
   weights: number[] | null;
   recordedWinningNumber: number;
   computedWinningNumber: number;
@@ -204,6 +232,38 @@ export interface ProbabilityProfileDto {
   effectiveFrom: string;
   createdById: string | null;
   createdAt: string;
+}
+
+export interface ProbabilityProfileSummaryDto {
+  id: string;
+  name: string;
+  mode: ProbabilityMode;
+  estimatedRtp: number;
+}
+
+export interface ProbabilityScheduleDto {
+  id: string;
+  profileId: string;
+  startsAt: string;
+  endsAt: string;
+  reason: string;
+  createdAt: string;
+  cancelledAt: string | null;
+  cancelReason: string | null;
+  status: ProbabilityScheduleStatus;
+  profile: ProbabilityProfileSummaryDto;
+}
+
+export interface CurrentProbabilityPolicyDto {
+  source: "FAIR" | "SCHEDULE";
+  mode: ProbabilityMode;
+  scheduleId: string | null;
+  profileId: string | null;
+  profileName: string | null;
+  estimatedRtp: number;
+  startsAt: string | null;
+  endsAt: string | null;
+  nextTransitionAt: string | null;
 }
 
 export interface RtpEstimateDto {

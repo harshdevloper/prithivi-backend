@@ -40,8 +40,14 @@ export class SettingsService {
   // ---- typed getters (used by other modules) ----
 
   async getNumber(key: string): Promise<number> {
+    const definition = SETTINGS_BY_KEY[key];
     const parsed = Number(await this.raw(key));
-    return Number.isFinite(parsed) ? parsed : Number(SETTINGS_BY_KEY[key]?.default ?? 0);
+    const valid =
+      Number.isFinite(parsed) &&
+      (definition.integer !== true || Number.isInteger(parsed)) &&
+      (definition.min === undefined || parsed >= definition.min) &&
+      (definition.max === undefined || parsed <= definition.max);
+    return valid ? parsed : Number(definition.default);
   }
 
   async getBoolean(key: string): Promise<boolean> {
@@ -49,7 +55,11 @@ export class SettingsService {
   }
 
   async getString(key: string): Promise<string> {
-    return this.raw(key);
+    const value = await this.raw(key);
+    if (key === "game.roulette.resetTimezone" && !SettingsService.isValidIanaTimezone(value)) {
+      return SETTINGS_BY_KEY[key].default;
+    }
+    return value;
   }
 
   // ---- admin ----
@@ -78,6 +88,11 @@ export class SettingsService {
   async update(input: UpdateSettingsInput, updatedById: string | undefined): Promise<SettingDto[]> {
     const entries = Object.entries(input.values)
       .filter(([key, value]) => {
+        if (key === "game.roulette.probabilityMode") {
+          throw new BadRequestError(
+            '"game.roulette.probabilityMode" is retired; use a timed roulette probability schedule',
+          );
+        }
         const definition = SETTINGS_BY_KEY[key];
         if (!definition) throw new BadRequestError(`Unknown setting "${key}"`);
         // A blank secret submission means "keep the existing value".
@@ -106,6 +121,9 @@ export class SettingsService {
         if (!Number.isFinite(parsed)) {
           throw new BadRequestError(`"${definition.key}" must be a number`);
         }
+        if (definition.integer === true && !Number.isInteger(parsed)) {
+          throw new BadRequestError(`"${definition.key}" must be an integer`);
+        }
         if (definition.min !== undefined && parsed < definition.min) {
           throw new BadRequestError(`"${definition.key}" must be >= ${definition.min}`);
         }
@@ -121,8 +139,22 @@ export class SettingsService {
             `"${definition.key}" must be one of: ${definition.enum.join(", ")}`,
           );
         }
+        if (definition.key === "game.roulette.resetTimezone") {
+          if (!SettingsService.isValidIanaTimezone(trimmed)) {
+            throw new BadRequestError(`"${definition.key}" must be a valid IANA timezone`);
+          }
+        }
         return trimmed;
       }
+    }
+  }
+
+  private static isValidIanaTimezone(value: string): boolean {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: value }).format();
+      return true;
+    } catch {
+      return false;
     }
   }
 }

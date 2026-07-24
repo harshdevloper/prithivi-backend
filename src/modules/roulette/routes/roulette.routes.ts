@@ -4,6 +4,8 @@ import { adminOnly, superAdminOnly } from "../../../middleware/role-guard.js";
 import {
   activateProfileSchema,
   analyticsQuerySchema,
+  cancelProbabilityScheduleSchema,
+  createProbabilityScheduleSchema,
   createProfileSchema,
   estimateRtpSchema,
   historyQuerySchema,
@@ -11,7 +13,10 @@ import {
   profileIdParamsSchema,
   roundIdParamsSchema,
   roundsQuerySchema,
+  scheduleIdParamsSchema,
   type ActivateProfileInput,
+  type CancelProbabilityScheduleInput,
+  type CreateProbabilityScheduleInput,
   type CreateProfileInput,
   type EstimateRtpInput,
   type HistoryQuery,
@@ -19,6 +24,7 @@ import {
   type ProfileIdParams,
   type RoundIdParams,
   type RoundsQuery,
+  type ScheduleIdParams,
 } from "../schemas/roulette.schema.js";
 
 /** Registered under /game. User surface: /game/roulette/*, admin: /game/roulette/admin/*. */
@@ -127,7 +133,7 @@ export const rouletteRoutes = async (app: FastifyInstance): Promise<void> => {
       preHandler: [authGuard, superAdminOnly],
       schema: {
         tags: ["roulette-admin"],
-        summary: "Create a probability profile (draft; not active until activated)",
+        summary: "Create an immutable probability profile definition for scheduling",
         security: [{ bearerAuth: [] }],
         body: createProfileSchema,
       },
@@ -141,13 +147,68 @@ export const rouletteRoutes = async (app: FastifyInstance): Promise<void> => {
       preHandler: [authGuard, superAdminOnly],
       schema: {
         tags: ["roulette-admin"],
-        summary: "Activate a profile (affects future rounds only; audited with reason)",
+        summary: "Retired endpoint; use timed probability schedules (returns 410)",
         security: [{ bearerAuth: [] }],
         params: profileIdParamsSchema,
         body: activateProfileSchema,
       },
     },
     controller.adminActivateProfile,
+  );
+
+  app.get(
+    "/roulette/admin/probability-schedules",
+    {
+      preHandler: [authGuard, adminOnly],
+      schema: {
+        tags: ["roulette-admin"],
+        summary: "List timed probability schedules with derived status",
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    controller.adminListProbabilitySchedules,
+  );
+
+  app.post<{ Body: CreateProbabilityScheduleInput }>(
+    "/roulette/admin/probability-schedules",
+    {
+      preHandler: [authGuard, superAdminOnly],
+      schema: {
+        tags: ["roulette-admin"],
+        summary: "Schedule an immutable probability profile window",
+        security: [{ bearerAuth: [] }],
+        body: createProbabilityScheduleSchema,
+      },
+    },
+    controller.adminCreateProbabilitySchedule,
+  );
+
+  app.post<{ Params: ScheduleIdParams; Body: CancelProbabilityScheduleInput }>(
+    "/roulette/admin/probability-schedules/:id/cancel",
+    {
+      preHandler: [authGuard, superAdminOnly],
+      schema: {
+        tags: ["roulette-admin"],
+        summary: "Cancel a scheduled or active probability window with a reason",
+        security: [{ bearerAuth: [] }],
+        params: scheduleIdParamsSchema,
+        body: cancelProbabilityScheduleSchema,
+      },
+    },
+    controller.adminCancelProbabilitySchedule,
+  );
+
+  app.get(
+    "/roulette/admin/probability-policy/current",
+    {
+      preHandler: [authGuard, adminOnly],
+      schema: {
+        tags: ["roulette-admin"],
+        summary: "Current resolved probability policy and next transition",
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    controller.adminCurrentProbabilityPolicy,
   );
 
   app.post<{ Body: EstimateRtpInput }>(

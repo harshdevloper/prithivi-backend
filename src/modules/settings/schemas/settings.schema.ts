@@ -11,6 +11,7 @@ export interface SettingDefinition {
   default: string; // serialized default; interpreted per `type`
   min?: number; // NUMBER only — admin-side hint + server clamp
   max?: number;
+  integer?: boolean; // NUMBER only — reject fractional values
   enum?: readonly string[]; // STRING only — allowed values
   /** Write-only credential: its value is never returned by the API; an empty
    *  submission means "keep the existing value". */
@@ -23,6 +24,49 @@ export interface SettingDefinition {
  * Modules read values through SettingsService typed getters.
  */
 export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
+  // --- Add Coins (Razorpay package) ---
+  {
+    key: "coinPurchase.enabled",
+    type: "BOOLEAN",
+    category: "Add Coins",
+    label: "Add Coins enabled",
+    description:
+      "Show the Razorpay Add Coins flow. Razorpay server credentials must also be configured.",
+    default: "false",
+  },
+  {
+    key: "coinPurchase.packPriceRupees",
+    type: "NUMBER",
+    category: "Add Coins",
+    label: "Package price (INR)",
+    description: "Rupees charged for one coin package.",
+    default: "10",
+    min: 1,
+    max: 100000,
+    integer: true,
+  },
+  {
+    key: "coinPurchase.coinsPerPack",
+    type: "NUMBER",
+    category: "Add Coins",
+    label: "Coins per package",
+    description: "Coins credited after one package payment is captured.",
+    default: "100",
+    min: 1,
+    max: 100000000,
+    integer: true,
+  },
+  {
+    key: "coinPurchase.maxPacks",
+    type: "NUMBER",
+    category: "Add Coins",
+    label: "Maximum packages per payment",
+    description: "Largest package quantity a user may buy in one Razorpay payment.",
+    default: "10",
+    min: 1,
+    max: 100,
+    integer: true,
+  },
   // --- Withdrawals (Module 6) ---
   {
     key: "withdrawal.enabled",
@@ -303,6 +347,7 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     default: "10",
     min: 1,
     max: 1_000_000,
+    integer: true,
   },
   {
     key: "game.roulette.maxBet",
@@ -313,6 +358,7 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     default: "1000",
     min: 1,
     max: 1_000_000,
+    integer: true,
   },
   {
     key: "game.roulette.defaultBet",
@@ -323,6 +369,7 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     default: "50",
     min: 1,
     max: 1_000_000,
+    integer: true,
   },
   {
     key: "game.roulette.betStep",
@@ -333,6 +380,7 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     default: "10",
     min: 1,
     max: 1_000_000,
+    integer: true,
   },
   {
     key: "game.roulette.animationDurationMs",
@@ -343,6 +391,7 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     default: "3500",
     min: 1000,
     max: 20000,
+    integer: true,
   },
   {
     key: "game.roulette.resultModalMs",
@@ -353,6 +402,7 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     default: "4000",
     min: 500,
     max: 20000,
+    integer: true,
   },
   {
     key: "game.roulette.cooldownSeconds",
@@ -363,6 +413,7 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     default: "0",
     min: 0,
     max: 3600,
+    integer: true,
   },
   {
     key: "game.roulette.maxGamesPerDay",
@@ -373,6 +424,7 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     default: "100",
     min: 0,
     max: 100000,
+    integer: true,
   },
   {
     key: "game.roulette.maxPaidGamesPerDay",
@@ -383,6 +435,7 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     default: "100",
     min: 0,
     max: 100000,
+    integer: true,
   },
   {
     key: "game.roulette.resetTimezone",
@@ -426,16 +479,19 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     default: "3",
     min: 0,
     max: 1000,
+    integer: true,
   },
   {
     key: "game.roulette.freeGameStake",
     type: "NUMBER",
     category: "Roulette",
     label: "Free-spin stake value (coins)",
-    description: "Notional stake a free spin plays with; wins pay against this, no coins are debited.",
+    description:
+      "Notional stake a free spin plays with; wins pay against this, no coins are debited.",
     default: "50",
-    min: 0,
+    min: 1,
     max: 1_000_000,
+    integer: true,
   },
   // Payouts (profit "X to 1" multiplier; total credited on win = stake x (multiplier + 1))
   {
@@ -447,6 +503,7 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     default: "35",
     min: 0,
     max: 1000,
+    integer: true,
   },
   {
     key: "game.roulette.payout.odd",
@@ -457,6 +514,7 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     default: "1",
     min: 0,
     max: 1000,
+    integer: true,
   },
   {
     key: "game.roulette.payout.even",
@@ -467,6 +525,7 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     default: "1",
     min: 0,
     max: 1000,
+    integer: true,
   },
   {
     key: "game.roulette.payout.red",
@@ -477,6 +536,7 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     default: "1",
     min: 0,
     max: 1000,
+    integer: true,
   },
   {
     key: "game.roulette.payout.black",
@@ -487,26 +547,31 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     default: "1",
     min: 0,
     max: 1000,
+    integer: true,
   },
   {
     key: "game.roulette.maxPayoutPerGame",
     type: "NUMBER",
     category: "Roulette",
     label: "Max payout per spin (coins)",
-    description: "Hard cap on coins credited from a single winning spin.",
+    description:
+      "Reject a bet before spinning when its configured full win would exceed this amount.",
     default: "100000",
     min: 0,
     max: 100_000_000,
+    integer: true,
   },
   {
     key: "game.roulette.maxPayoutPerUserPerDay",
     type: "NUMBER",
     category: "Roulette",
     label: "Max payout per user per day (coins)",
-    description: "Once a user is credited this many coins in a day, further wins pay 0.",
+    description:
+      "Reject a bet before spinning when its configured full win exceeds the user's remaining daily allowance.",
     default: "500000",
     min: 0,
     max: 100_000_000,
+    integer: true,
   },
   // Bet-type switches
   {
@@ -548,17 +613,6 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     label: "Allow black bets",
     description: "Enable the black betting option.",
     default: "true",
-  },
-  // Probability / RTP
-  {
-    key: "game.roulette.probabilityMode",
-    type: "STRING",
-    category: "Roulette",
-    label: "Probability mode",
-    description:
-      "FAIR = every number 0..36 equally likely (standard 97.3% RTP). WEIGHTED = use the active probability profile's number weights. Changing this affects only future spins.",
-    default: "FAIR",
-    enum: ["FAIR", "WEIGHTED"],
   },
   // --- Web (in-app web zone) ---
   {
