@@ -60,6 +60,12 @@ const envSchema = z.object({
   XOXODAY_CAMPAIGN_ID: z.string().default(""),
   XOXODAY_LINK_EXPIRY_DAYS: z.coerce.number().int().min(1).max(3650).default(90),
 
+  // Razorpay Standard Checkout. The key id is returned only as part of an
+  // authenticated order response; the secret never leaves this server.
+  RAZORPAY_KEY_ID: z.string().optional(),
+  RAZORPAY_KEY_SECRET: z.string().optional(),
+  RAZORPAY_API_BASE_URL: z.string().url().default("https://api.razorpay.com/v1"),
+
   /** cloudinary://<api_key>:<api_secret>@<cloud_name> — falls back to local disk when unset. */
   CLOUDINARY_URL: z.string().optional(),
   UPLOADS_DIR: z.string().default("uploads"),

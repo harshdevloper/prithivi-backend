@@ -3,6 +3,8 @@ import { success } from "../../../common/response.js";
 import type { AdminActor, RouletteService } from "../services/roulette.service.js";
 import type {
   ActivateProfileInput,
+  CancelProbabilityScheduleInput,
+  CreateProbabilityScheduleInput,
   CreateProfileInput,
   EstimateRtpInput,
   HistoryQuery,
@@ -10,6 +12,7 @@ import type {
   ProfileIdParams,
   RoundIdParams,
   RoundsQuery,
+  ScheduleIdParams,
 } from "../schemas/roulette.schema.js";
 
 export class RouletteController {
@@ -58,13 +61,60 @@ export class RouletteController {
     request: FastifyRequest<{ Params: RoundIdParams }>,
     reply: FastifyReply,
   ): Promise<void> => {
-    reply.send(success(await this.rouletteService.verifyRound(request.params.id, request.user.sub)));
+    reply.send(
+      success(await this.rouletteService.verifyRound(request.params.id, request.user.sub)),
+    );
   };
 
   // ---- admin ----
 
   adminListProfiles = async (_request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     reply.send(success(await this.rouletteService.listProfiles()));
+  };
+
+  adminListProbabilitySchedules = async (
+    _request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    reply.send(success(await this.rouletteService.listProbabilitySchedules()));
+  };
+
+  adminCreateProbabilitySchedule = async (
+    request: FastifyRequest<{ Body: CreateProbabilityScheduleInput }>,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    reply
+      .status(201)
+      .send(
+        success(
+          await this.rouletteService.createProbabilitySchedule(this.actor(request), request.body),
+        ),
+      );
+  };
+
+  adminCancelProbabilitySchedule = async (
+    request: FastifyRequest<{
+      Params: ScheduleIdParams;
+      Body: CancelProbabilityScheduleInput;
+    }>,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    reply.send(
+      success(
+        await this.rouletteService.cancelProbabilitySchedule(
+          this.actor(request),
+          request.params.id,
+          request.body,
+        ),
+      ),
+    );
+  };
+
+  adminCurrentProbabilityPolicy = async (
+    _request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    reply.send(success(await this.rouletteService.currentProbabilityPolicy()));
   };
 
   adminCreateProfile = async (
@@ -117,9 +167,7 @@ export class RouletteController {
     request: FastifyRequest<{ Querystring: { from?: string; to?: string } }>,
     reply: FastifyReply,
   ): Promise<void> => {
-    reply.send(
-      success(await this.rouletteService.analytics(request.query.from, request.query.to)),
-    );
+    reply.send(success(await this.rouletteService.analytics(request.query.from, request.query.to)));
   };
 
   adminAuditLogs = async (

@@ -3,6 +3,7 @@ import {
   colourOf,
   deriveOutcome,
   estimateRtp,
+  evaluatePayoutCapacity,
   fairRoll,
   hashSeed,
   newSeed,
@@ -47,36 +48,149 @@ describe("wheel classification", () => {
 
 describe("settleBet payouts", () => {
   it("pays a straight-up number win 36x total (35 to 1)", () => {
-    const r = settleBet({ betType: "NUMBER", selectedNumber: 17, stake: 100, winningNumber: 17, multipliers: STD });
+    const r = settleBet({
+      betType: "NUMBER",
+      selectedNumber: 17,
+      stake: 100,
+      winningNumber: 17,
+      multipliers: STD,
+    });
     expect(r.won).toBe(true);
     expect(r.payout).toBe(3600);
     expect(r.profitMultiplier).toBe(35);
   });
 
   it("loses a number bet when the pocket differs", () => {
-    const r = settleBet({ betType: "NUMBER", selectedNumber: 17, stake: 100, winningNumber: 18, multipliers: STD });
+    const r = settleBet({
+      betType: "NUMBER",
+      selectedNumber: 17,
+      stake: 100,
+      winningNumber: 18,
+      multipliers: STD,
+    });
     expect(r.won).toBe(false);
     expect(r.payout).toBe(0);
   });
 
   it("pays even-money bets 2x total (1 to 1)", () => {
-    expect(settleBet({ betType: "ODD", selectedNumber: null, stake: 50, winningNumber: 7, multipliers: STD }).payout).toBe(100);
-    expect(settleBet({ betType: "EVEN", selectedNumber: null, stake: 50, winningNumber: 8, multipliers: STD }).payout).toBe(100);
-    expect(settleBet({ betType: "RED", selectedNumber: null, stake: 50, winningNumber: 1, multipliers: STD }).payout).toBe(100);
-    expect(settleBet({ betType: "BLACK", selectedNumber: null, stake: 50, winningNumber: 2, multipliers: STD }).payout).toBe(100);
+    expect(
+      settleBet({
+        betType: "ODD",
+        selectedNumber: null,
+        stake: 50,
+        winningNumber: 7,
+        multipliers: STD,
+      }).payout,
+    ).toBe(100);
+    expect(
+      settleBet({
+        betType: "EVEN",
+        selectedNumber: null,
+        stake: 50,
+        winningNumber: 8,
+        multipliers: STD,
+      }).payout,
+    ).toBe(100);
+    expect(
+      settleBet({
+        betType: "RED",
+        selectedNumber: null,
+        stake: 50,
+        winningNumber: 1,
+        multipliers: STD,
+      }).payout,
+    ).toBe(100);
+    expect(
+      settleBet({
+        betType: "BLACK",
+        selectedNumber: null,
+        stake: 50,
+        winningNumber: 2,
+        multipliers: STD,
+      }).payout,
+    ).toBe(100);
   });
 
   it("loses EVERY even-money bet on 0 — the house edge", () => {
     for (const betType of ["ODD", "EVEN", "RED", "BLACK"] as const) {
-      expect(settleBet({ betType, selectedNumber: null, stake: 10, winningNumber: 0, multipliers: STD }).won).toBe(false);
+      expect(
+        settleBet({ betType, selectedNumber: null, stake: 10, winningNumber: 0, multipliers: STD })
+          .won,
+      ).toBe(false);
     }
     // but a straight-up 0 bet still wins
-    expect(settleBet({ betType: "NUMBER", selectedNumber: 0, stake: 10, winningNumber: 0, multipliers: STD }).won).toBe(true);
+    expect(
+      settleBet({
+        betType: "NUMBER",
+        selectedNumber: 0,
+        stake: 10,
+        winningNumber: 0,
+        multipliers: STD,
+      }).won,
+    ).toBe(true);
   });
 
   it("respects custom multipliers", () => {
-    const r = settleBet({ betType: "RED", selectedNumber: null, stake: 100, winningNumber: 3, multipliers: { ...STD, red: 2 } });
+    const r = settleBet({
+      betType: "RED",
+      selectedNumber: null,
+      stake: 100,
+      winningNumber: 3,
+      multipliers: { ...STD, red: 2 },
+    });
     expect(r.payout).toBe(300); // stake x (2 + 1)
+  });
+
+  it("rejects a zero-cap bet before sampling instead of creating a zero-credit win", () => {
+    expect(
+      evaluatePayoutCapacity({
+        betType: "RED",
+        stake: 100,
+        multipliers: STD,
+        maxPayoutPerGame: 0,
+        dailyPayoutRemaining: 10_000,
+      }),
+    ).toEqual({ eligible: false, fullPayout: 200, limit: "PER_GAME" });
+  });
+
+  it("rejects partial per-game and daily payouts before sampling", () => {
+    expect(
+      evaluatePayoutCapacity({
+        betType: "NUMBER",
+        stake: 100,
+        multipliers: STD,
+        maxPayoutPerGame: 500,
+        dailyPayoutRemaining: 10_000,
+      }),
+    ).toEqual({ eligible: false, fullPayout: 3600, limit: "PER_GAME" });
+    expect(
+      evaluatePayoutCapacity({
+        betType: "NUMBER",
+        stake: 100,
+        multipliers: STD,
+        maxPayoutPerGame: 10_000,
+        dailyPayoutRemaining: 400,
+      }),
+    ).toEqual({ eligible: false, fullPayout: 3600, limit: "DAILY" });
+  });
+
+  it("accepts a fully payable bet and its win settles at that exact amount", () => {
+    const capacity = evaluatePayoutCapacity({
+      betType: "NUMBER",
+      stake: 100,
+      multipliers: STD,
+      maxPayoutPerGame: 10_000,
+      dailyPayoutRemaining: 4_000,
+    });
+    const outcome = settleBet({
+      betType: "NUMBER",
+      selectedNumber: 17,
+      stake: 100,
+      winningNumber: 17,
+      multipliers: STD,
+    });
+    expect(capacity).toEqual({ eligible: true, fullPayout: 3600, limit: null });
+    expect(outcome.payout).toBe(capacity.fullPayout);
   });
 });
 
@@ -97,8 +211,20 @@ describe("provably-fair RNG", () => {
   it("verifies: recomputing from stored seeds reproduces the number, and the hash commits the seed", () => {
     const serverSeed = newSeed();
     const hash = hashSeed(serverSeed);
-    const out = deriveOutcome({ serverSeed, clientSeed: "player-seed", nonce: 0, mode: "FAIR", weights: null });
-    const recomputed = deriveOutcome({ serverSeed, clientSeed: "player-seed", nonce: 0, mode: "FAIR", weights: null });
+    const out = deriveOutcome({
+      serverSeed,
+      clientSeed: "player-seed",
+      nonce: 0,
+      mode: "FAIR",
+      weights: null,
+    });
+    const recomputed = deriveOutcome({
+      serverSeed,
+      clientSeed: "player-seed",
+      nonce: 0,
+      mode: "FAIR",
+      weights: null,
+    });
     expect(recomputed.winningNumber).toBe(out.winningNumber);
     expect(hashSeed(serverSeed)).toBe(hash);
   });

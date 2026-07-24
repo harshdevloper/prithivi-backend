@@ -1,30 +1,51 @@
 import { Prisma } from "@prisma/client";
-import type { PrismaClient, RouletteRound } from "@prisma/client";
-import { AppError, BadRequestError, ForbiddenError, NotFoundError } from "../../../common/errors.js";
+import type {
+  PrismaClient,
+  RouletteProbabilityProfile,
+  RouletteProbabilitySchedule,
+  RouletteRound,
+} from "@prisma/client";
+import {
+  AppError,
+  BadRequestError,
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+} from "../../../common/errors.js";
 import type { PageMeta } from "../../../common/response.js";
 import type { NotificationsService } from "../../notifications/services/notifications.service.js";
 import type { SettingsService } from "../../settings/services/settings.service.js";
+import {
+  probabilityModeForProfile,
+  probabilityScheduleStatusAt,
+} from "../engine/probability-policy.js";
 import {
   RED_NUMBERS,
   WHEEL_SEQUENCE,
   colourOf,
   deriveOutcome,
   estimateRtp,
+  evaluatePayoutCapacity,
   hashSeed,
   newSeed,
   parityOf,
   settleBet,
   validateWeights,
+  type PayoutCapacity,
   type PayoutMultipliers,
   type ProbabilityMode,
   type RouletteBetType,
 } from "../engine/roulette.js";
 import type {
+  CancelProbabilityScheduleInput,
+  CreateProbabilityScheduleInput,
   CreateProfileInput,
+  CurrentProbabilityPolicyDto,
   EstimateRtpInput,
   PlayInput,
   PlayResultDto,
   ProbabilityProfileDto,
+  ProbabilityScheduleDto,
   RouletteAnalyticsDto,
   RouletteConfigDto,
   RouletteRoundDto,
@@ -44,6 +65,23 @@ export interface AdminActor {
 
 const num = (d: Prisma.Decimal | number | null | undefined): number =>
   d === null || d === undefined ? 0 : typeof d === "number" ? d : d.toNumber();
+
+type ProbabilityScheduleWithProfile = RouletteProbabilitySchedule & {
+  profile: RouletteProbabilityProfile;
+};
+
+type ProbabilityPolicyClient = Pick<PrismaClient, "rouletteProbabilitySchedule">;
+type RouletteRoundReadClient = Pick<PrismaClient, "rouletteRound">;
+
+interface ResolvedProbabilityPolicy {
+  source: "FAIR" | "SCHEDULE";
+  mode: ProbabilityMode;
+  schedule: ProbabilityScheduleWithProfile | null;
+  weights: number[] | null;
+  estimatedRtp: number;
+  resolvedAt: Date;
+  nextTransitionAt: Date | null;
+}
 
 // ponytail: queries are direct-Prisma like GameService; add a repository only if they grow.
 export class RouletteService {
@@ -77,45 +115,169 @@ export class RouletteService {
     return this.settings.getBoolean(key);
   }
 
+  private async transactionNow(tx: Prisma.TransactionClient): Promise<Date> {
+    const rows = await tx.$queryRaw<{ now: Date }[]>`
+      SELECT clock_timestamp() AS "now"`;
+    const now = rows[0]?.now;
+    if (!now)
+      throw new AppError("Could not resolve database time", 503, "DATABASE_TIME_UNAVAILABLE");
+    return now;
+  }
+
+  /** Serialize all plays for one user; hash collisions only add harmless extra serialization. */
+  private async lockUserPlay(tx: Prisma.TransactionClient, userId: string): Promise<void> {
+    await tx.$queryRaw`
+      SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 20260724))`;
+  }
+
   /**
-   * UTC instant of the most recent midnight in the configured timezone. Uses
-   * the tz offset that applies right now — accurate to the minute except on the
-   * rare DST-transition day, which is fine for a daily reset boundary.
-   * ponytail: swap for a tz library only if sub-day DST precision ever matters.
+   * Live policy reads share a dedicated lock; schedule mutations take the
+   * matching exclusive lock. This makes DB time + schedule selection one
+   * linearizable snapshot without serializing unrelated plays.
    */
+  private async lockProbabilityPolicyRead(tx: Prisma.TransactionClient): Promise<void> {
+    await tx.$queryRaw`
+      SELECT pg_advisory_xact_lock_shared(20260724, 7301)`;
+  }
+
+  private async lockProbabilityPolicyWrite(tx: Prisma.TransactionClient): Promise<void> {
+    await tx.$queryRaw`
+      SELECT pg_advisory_xact_lock(20260724, 7301)`;
+  }
+
+  private profileWeights(profile: Pick<RouletteProbabilityProfile, "mode" | "numberWeights">): {
+    mode: ProbabilityMode;
+    weights: number[] | null;
+  } {
+    const profileMode = profile.mode as ProbabilityMode;
+    const mode = probabilityModeForProfile(profileMode);
+    if (mode === "FAIR") return { mode, weights: null };
+
+    const check = validateWeights(profile.numberWeights);
+    if (!check.valid) {
+      throw new AppError(
+        "The scheduled roulette probability profile is invalid",
+        503,
+        "ROULETTE_POLICY_INVALID",
+        check.errors,
+      );
+    }
+    return { mode, weights: profile.numberWeights as number[] };
+  }
+
+  /**
+   * Resolve exactly one policy at a DB-clock instant. Schedules are immutable;
+   * cancellation is considered relative to the same instant so a boundary or
+   * concurrent cancellation cannot change a spin after it has been accepted.
+   */
+  private async resolveProbabilityPolicy(
+    payouts: PayoutMultipliers,
+  ): Promise<ResolvedProbabilityPolicy> {
+    return this.prisma.$transaction(
+      async (tx) => {
+        await this.lockProbabilityPolicyRead(tx);
+        const resolvedAt = await this.transactionNow(tx);
+        return this.resolveProbabilityPolicyAt(tx, payouts, resolvedAt);
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+    );
+  }
+
+  private async resolveProbabilityPolicyAt(
+    client: ProbabilityPolicyClient,
+    payouts: PayoutMultipliers,
+    resolvedAt: Date,
+  ): Promise<ResolvedProbabilityPolicy> {
+    const validAtInstant: Prisma.RouletteProbabilityScheduleWhereInput = {
+      createdAt: { lte: resolvedAt },
+      startsAt: { lte: resolvedAt },
+      endsAt: { gt: resolvedAt },
+      OR: [{ cancelledAt: null }, { cancelledAt: { gt: resolvedAt } }],
+    };
+    const futureAtInstant: Prisma.RouletteProbabilityScheduleWhereInput = {
+      createdAt: { lte: resolvedAt },
+      startsAt: { gt: resolvedAt },
+      OR: [{ cancelledAt: null }, { cancelledAt: { gt: resolvedAt } }],
+    };
+
+    const [schedule, nextSchedule] = await Promise.all([
+      client.rouletteProbabilitySchedule.findFirst({
+        where: validAtInstant,
+        include: { profile: true },
+        orderBy: { startsAt: "desc" },
+      }),
+      client.rouletteProbabilitySchedule.findFirst({
+        where: futureAtInstant,
+        select: { startsAt: true },
+        orderBy: { startsAt: "asc" },
+      }),
+    ]);
+
+    if (!schedule) {
+      const estimatedRtp = estimateRtp("FAIR", null, payouts).overall;
+      return {
+        source: "FAIR",
+        mode: "FAIR",
+        schedule: null,
+        weights: null,
+        estimatedRtp: Number(estimatedRtp.toFixed(4)),
+        resolvedAt,
+        nextTransitionAt: nextSchedule?.startsAt ?? null,
+      };
+    }
+
+    const { mode, weights } = this.profileWeights(schedule.profile);
+    const estimatedRtp = estimateRtp(mode, weights, payouts).overall;
+    return {
+      source: "SCHEDULE",
+      mode,
+      schedule,
+      weights,
+      estimatedRtp: Number(estimatedRtp.toFixed(4)),
+      resolvedAt,
+      nextTransitionAt: schedule.endsAt,
+    };
+  }
+
   private async startOfDay(): Promise<Date> {
     const tz = await this.settings.getString("game.roulette.resetTimezone");
-    const now = new Date();
-    try {
-      const fmt = new Intl.DateTimeFormat("en-US", {
-        timeZone: tz,
-        hourCycle: "h23",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      });
-      const p = Object.fromEntries(
-        fmt.formatToParts(now).filter((x) => x.type !== "literal").map((x) => [x.type, x.value]),
-      ) as Record<string, string>;
-      const wallAsUtc = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
-      const offsetMs = wallAsUtc - now.getTime();
-      const midnightWallAsUtc = Date.UTC(+p.year, +p.month - 1, +p.day, 0, 0, 0);
-      return new Date(midnightWallAsUtc - offsetMs);
-    } catch {
-      const local = new Date();
-      local.setHours(0, 0, 0, 0);
-      return local;
+    return this.prisma.$transaction(async (tx) => {
+      const now = await this.transactionNow(tx);
+      return this.transactionDayStart(tx, now, tz);
+    });
+  }
+
+  /**
+   * Resolve the configured timezone's midnight in PostgreSQL. This avoids an
+   * application/server clock split and remains exact on DST transition days.
+   */
+  private async transactionDayStart(
+    tx: Prisma.TransactionClient,
+    now: Date,
+    timezone: string,
+  ): Promise<Date> {
+    const rows = await tx.$queryRaw<{ startOfDay: Date }[]>`
+      SELECT (
+        date_trunc('day', ${now}::timestamptz AT TIME ZONE ${timezone})
+        AT TIME ZONE ${timezone}
+      ) AS "startOfDay"`;
+    const startOfDay = rows[0]?.startOfDay;
+    if (!startOfDay) {
+      throw new AppError(
+        "Could not resolve the roulette daily reset boundary",
+        503,
+        "ROULETTE_DAY_BOUNDARY_UNAVAILABLE",
+      );
     }
+    return startOfDay;
   }
 
   private async dailyUsage(
     userId: string,
     startOfDay: Date,
+    client: RouletteRoundReadClient = this.prisma,
   ): Promise<{ total: number; paid: number; freeUsed: number; credited: number }> {
-    const rows = await this.prisma.rouletteRound.findMany({
+    const rows = await client.rouletteRound.findMany({
       where: { userId, createdAt: { gte: startOfDay }, status: "SETTLED" },
       select: { usedFreeGame: true, payoutAmount: true },
     });
@@ -200,7 +362,6 @@ export class RouletteService {
       cooldownSeconds,
       soundEnabled,
       hapticsEnabled,
-      probabilityMode,
       maxPayoutPerGame,
       payouts,
       betNumber,
@@ -224,7 +385,6 @@ export class RouletteService {
       this.settings.getNumber("game.roulette.cooldownSeconds"),
       this.settings.getBoolean("game.roulette.soundEnabled"),
       this.settings.getBoolean("game.roulette.hapticsEnabled"),
-      this.settings.getString("game.roulette.probabilityMode"),
       this.settings.getNumber("game.roulette.maxPayoutPerGame"),
       this.payoutMultipliers(),
       this.settings.getBoolean("game.roulette.bet.numberEnabled"),
@@ -235,9 +395,7 @@ export class RouletteService {
       this.getStatus(userId),
     ]);
 
-    const mode: ProbabilityMode = probabilityMode === "WEIGHTED" ? "WEIGHTED" : "FAIR";
-    const weights = mode === "WEIGHTED" ? (await this.activeProfile())?.numberWeights ?? null : null;
-    const rtp = estimateRtp(mode, weights as number[] | null, payouts).overall;
+    const policy = await this.resolveProbabilityPolicy(payouts);
 
     return {
       enabled,
@@ -254,8 +412,8 @@ export class RouletteService {
       cooldownSeconds,
       soundEnabled,
       hapticsEnabled,
-      probabilityMode: mode,
-      estimatedRtp: Number(rtp.toFixed(4)),
+      probabilityMode: policy.mode,
+      estimatedRtp: policy.estimatedRtp,
       payouts,
       betTypesEnabled: {
         number: betNumber,
@@ -280,26 +438,52 @@ export class RouletteService {
     });
     if (prior) return this.buildPlayResult(prior, userId);
 
-    const [enabled, maintenance, freeEnabled, minBet, maxBet, maxPayoutGame, maxPayoutDay] =
-      await Promise.all([
-        this.settings.getBoolean("game.roulette.enabled"),
-        this.settings.getBoolean("game.roulette.maintenanceMode"),
-        this.settings.getBoolean("game.roulette.freeGamesEnabled"),
-        this.settings.getNumber("game.roulette.minBet"),
-        this.settings.getNumber("game.roulette.maxBet"),
-        this.settings.getNumber("game.roulette.maxPayoutPerGame"),
-        this.settings.getNumber("game.roulette.maxPayoutPerUserPerDay"),
-      ]);
+    const betType = input.betType as RouletteBetType;
+    const [
+      enabled,
+      maintenance,
+      freeEnabled,
+      minBet,
+      maxBet,
+      maxPayoutGame,
+      maxPayoutDay,
+      maxGames,
+      maxPaid,
+      cooldownS,
+      freePerDay,
+      freeStake,
+      resetTimezone,
+      betEnabled,
+      payouts,
+    ] = await Promise.all([
+      this.settings.getBoolean("game.roulette.enabled"),
+      this.settings.getBoolean("game.roulette.maintenanceMode"),
+      this.settings.getBoolean("game.roulette.freeGamesEnabled"),
+      this.settings.getNumber("game.roulette.minBet"),
+      this.settings.getNumber("game.roulette.maxBet"),
+      this.settings.getNumber("game.roulette.maxPayoutPerGame"),
+      this.settings.getNumber("game.roulette.maxPayoutPerUserPerDay"),
+      this.settings.getNumber("game.roulette.maxGamesPerDay"),
+      this.settings.getNumber("game.roulette.maxPaidGamesPerDay"),
+      this.settings.getNumber("game.roulette.cooldownSeconds"),
+      this.settings.getNumber("game.roulette.dailyFreeGames"),
+      this.settings.getNumber("game.roulette.freeGameStake"),
+      this.settings.getString("game.roulette.resetTimezone"),
+      this.betTypeEnabled(betType),
+      this.payoutMultipliers(),
+    ]);
 
     if (!enabled) throw new ForbiddenError("Roulette is currently disabled");
-    if (maintenance) throw new ForbiddenError("Roulette is under maintenance. Please try again soon.");
-
-    const betType = input.betType as RouletteBetType;
-    if (!(await this.betTypeEnabled(betType))) {
+    if (maintenance)
+      throw new ForbiddenError("Roulette is under maintenance. Please try again soon.");
+    if (!betEnabled) {
       throw new BadRequestError("This bet type is currently disabled");
     }
     const selectedNumber = betType === "NUMBER" ? (input.selectedValue ?? null) : null;
-    if (betType === "NUMBER" && (selectedNumber === null || selectedNumber < 0 || selectedNumber > 36)) {
+    if (
+      betType === "NUMBER" &&
+      (selectedNumber === null || selectedNumber < 0 || selectedNumber > 36)
+    ) {
       throw new BadRequestError("Pick a number from 0 to 36");
     }
 
@@ -308,151 +492,209 @@ export class RouletteService {
     let stake: number;
     if (useFree) {
       if (!freeEnabled) throw new BadRequestError("Free games are disabled");
-      stake = await this.settings.getNumber("game.roulette.freeGameStake");
+      stake = freeStake;
     } else {
       stake = input.betAmount;
       if (stake < minBet) throw new BadRequestError(`Minimum bet is ${minBet} coins`);
       if (stake > maxBet) throw new BadRequestError(`Maximum bet is ${maxBet} coins`);
     }
-
-    // Daily limits + cooldown (read before the money transaction).
-    const startOfDay = await this.startOfDay();
-    const [usage, lastRound, maxGames, maxPaid, cooldownS, freePerDay] = await Promise.all([
-      this.dailyUsage(userId, startOfDay),
-      this.prisma.rouletteRound.findFirst({
-        where: { userId },
-        orderBy: { createdAt: "desc" },
-        select: { createdAt: true },
-      }),
-      this.settings.getNumber("game.roulette.maxGamesPerDay"),
-      this.settings.getNumber("game.roulette.maxPaidGamesPerDay"),
-      this.settings.getNumber("game.roulette.cooldownSeconds"),
-      this.settings.getNumber("game.roulette.dailyFreeGames"),
-    ]);
-
-    if (usage.total >= maxGames) throw conflict("You've reached today's game limit");
-    if (useFree && usage.freeUsed >= freePerDay) throw conflict("No free games remaining today");
-    if (!useFree && usage.paid >= maxPaid) throw conflict("You've reached today's paid-game limit");
-    if (cooldownS > 0 && lastRound) {
-      const waitMs = lastRound.createdAt.getTime() + cooldownS * 1000 - Date.now();
-      if (waitMs > 0) throw conflict(`Please wait ${Math.ceil(waitMs / 1000)}s before your next spin`);
+    if (stake <= 0) {
+      throw new BadRequestError("Roulette stake must be greater than zero");
     }
 
-    // ---- decide the outcome (crypto, server-authoritative) ----
-    const payouts = await this.payoutMultipliers();
-    const modeSetting = await this.settings.getString("game.roulette.probabilityMode");
-    const activeProfile = modeSetting === "WEIGHTED" ? await this.activeProfile() : null;
-    const mode: ProbabilityMode = activeProfile ? "WEIGHTED" : "FAIR";
-    const weights = activeProfile ? (activeProfile.numberWeights as number[]) : null;
-
-    const serverSeed = newSeed();
-    const serverSeedHash = hashSeed(serverSeed);
-    const clientSeed = input.clientSeed ?? newSeed();
-    const nonce = 0; // fresh server seed per round
-
-    const { winningNumber } = deriveOutcome({ serverSeed, clientSeed, nonce, mode, weights });
-    const outcome = settleBet({ betType, selectedNumber, stake, winningNumber, multipliers: payouts });
-
-    // Cap payout per game, then by remaining daily payout allowance.
-    let payout = Math.min(outcome.payout, maxPayoutGame);
-    const dailyAllowance = Math.max(0, maxPayoutDay - usage.credited);
-    payout = Math.min(payout, dailyAllowance);
-    const netResult = useFree ? payout : payout - stake;
-
-    const configSnapshot = {
-      payouts,
-      minBet,
-      maxBet,
-      probabilityMode: mode,
-      probabilityProfileId: activeProfile?.id ?? null,
-      weights: weights ?? undefined,
-      maxPayoutPerGame: maxPayoutGame,
-      maxPayoutPerUserPerDay: maxPayoutDay,
-      freeGameStake: useFree ? stake : undefined,
-    };
-
-    const stakeDec = new Prisma.Decimal(stake);
-    const payoutDec = new Prisma.Decimal(payout);
-
     let round: RouletteRound;
+    let createdNewRound = false;
     try {
-      round = await this.prisma.$transaction(async (tx) => {
-        const created = await tx.rouletteRound.create({
-          data: {
-            userId,
+      const settled = await this.prisma.$transaction(
+        async (tx) => {
+          // Different idempotency keys for the same user must still serialize:
+          // limits, payout allowance, outcome and wallet settlement are one decision.
+          await this.lockUserPlay(tx, userId);
+
+          const duplicate = await tx.rouletteRound.findUnique({
+            where: {
+              userId_idempotencyKey: { userId, idempotencyKey: input.idempotencyKey },
+            },
+          });
+          if (duplicate) return { round: duplicate, created: false };
+
+          // Shared policy lock linearizes this round against schedule create/cancel.
+          await this.lockProbabilityPolicyRead(tx);
+          const now = await this.transactionNow(tx);
+          const startOfDay = await this.transactionDayStart(tx, now, resetTimezone);
+          const [usage, lastRound] = await Promise.all([
+            this.dailyUsage(userId, startOfDay, tx),
+            tx.rouletteRound.findFirst({
+              where: { userId },
+              orderBy: { createdAt: "desc" },
+              select: { createdAt: true },
+            }),
+          ]);
+
+          if (usage.total >= maxGames) throw conflict("You've reached today's game limit");
+          if (useFree && usage.freeUsed >= freePerDay) {
+            throw conflict("No free games remaining today");
+          }
+          if (!useFree && usage.paid >= maxPaid) {
+            throw conflict("You've reached today's paid-game limit");
+          }
+          if (cooldownS > 0 && lastRound) {
+            const waitMs = lastRound.createdAt.getTime() + cooldownS * 1000 - now.getTime();
+            if (waitMs > 0) {
+              throw conflict(`Please wait ${Math.ceil(waitMs / 1000)}s before your next spin`);
+            }
+          }
+
+          const dailyAllowance = Math.max(0, maxPayoutDay - usage.credited);
+          const capacity = evaluatePayoutCapacity({
             betType,
-            selectedNumber,
-            betAmount: stakeDec,
-            usedFreeGame: useFree,
-            winningNumber,
-            winningColour: outcome.colour,
-            parity: outcome.parity,
-            won: outcome.won,
-            payoutMultiplier: outcome.profitMultiplier,
-            payoutAmount: payoutDec,
-            netResult: new Prisma.Decimal(netResult),
-            status: "SETTLED",
-            probabilityMode: mode,
-            configSnapshot: configSnapshot as unknown as Prisma.InputJsonValue,
-            probabilityProfileId: activeProfile?.id ?? null,
+            stake,
+            multipliers: payouts,
+            maxPayoutPerGame: maxPayoutGame,
+            dailyPayoutRemaining: dailyAllowance,
+          });
+          if (!capacity.eligible) {
+            throw payoutCapacityError(capacity, maxPayoutGame, dailyAllowance);
+          }
+
+          // Capacity is decided before sampling: accepted rounds are full wins or
+          // true losses, never partially paid or forced to a losing pocket.
+          const policy = await this.resolveProbabilityPolicyAt(tx, payouts, now);
+          const { mode, weights } = policy;
+          const serverSeed = newSeed();
+          const serverSeedHash = hashSeed(serverSeed);
+          const clientSeed = input.clientSeed ?? newSeed();
+          const nonce = 0; // fresh server seed per round
+          const { winningNumber } = deriveOutcome({
             serverSeed,
-            serverSeedHash,
             clientSeed,
             nonce,
-            idempotencyKey: input.idempotencyKey,
-            settledAt: new Date(),
-          },
-        });
-
-        const wallet = await tx.wallet.upsert({
-          where: { userId },
-          create: { userId },
-          update: {},
-        });
-
-        // Paid: atomic guarded debit — the balance condition is what makes a
-        // negative balance / double-spend impossible without an explicit lock.
-        if (!useFree) {
-          const debit = await tx.wallet.updateMany({
-            where: { id: wallet.id, balance: { gte: stakeDec } },
-            data: { balance: { decrement: stakeDec } },
+            mode,
+            weights,
           });
-          if (debit.count !== 1) {
-            throw new AppError("Insufficient coin balance", 400, "INSUFFICIENT_BALANCE");
+          const outcome = settleBet({
+            betType,
+            selectedNumber,
+            stake,
+            winningNumber,
+            multipliers: payouts,
+          });
+          const payout = outcome.payout;
+          const netResult = useFree ? payout : payout - stake;
+
+          const configSnapshot = {
+            payouts,
+            minBet,
+            maxBet,
+            probabilitySource: policy.source,
+            probabilityMode: mode,
+            probabilityProfileId: policy.schedule?.profile.id ?? null,
+            probabilityProfileName: policy.schedule?.profile.name ?? null,
+            probabilityScheduleId: policy.schedule?.id ?? null,
+            probabilityScheduleStartsAt: policy.schedule?.startsAt.toISOString() ?? null,
+            probabilityScheduleEndsAt: policy.schedule?.endsAt.toISOString() ?? null,
+            policyResolvedAt: policy.resolvedAt.toISOString(),
+            weights: weights ?? undefined,
+            fullWinPayout: capacity.fullPayout,
+            maxPayoutPerGame: maxPayoutGame,
+            maxPayoutPerUserPerDay: maxPayoutDay,
+            dailyPayoutRemainingBeforeRound: dailyAllowance,
+            freeGameStake: useFree ? stake : undefined,
+          };
+          const stakeDec = new Prisma.Decimal(stake);
+          const payoutDec = new Prisma.Decimal(payout);
+
+          const created = await tx.rouletteRound.create({
+            data: {
+              userId,
+              betType,
+              selectedNumber,
+              betAmount: stakeDec,
+              usedFreeGame: useFree,
+              winningNumber,
+              winningColour: outcome.colour,
+              parity: outcome.parity,
+              won: outcome.won,
+              payoutMultiplier: outcome.profitMultiplier,
+              payoutAmount: payoutDec,
+              netResult: new Prisma.Decimal(netResult),
+              status: "SETTLED",
+              probabilityMode: mode,
+              configSnapshot: configSnapshot as unknown as Prisma.InputJsonValue,
+              probabilityProfileId: policy.schedule?.profile.id ?? null,
+              probabilityScheduleId: policy.schedule?.id ?? null,
+              policyResolvedAt: policy.resolvedAt,
+              serverSeed,
+              serverSeedHash,
+              clientSeed,
+              nonce,
+              idempotencyKey: input.idempotencyKey,
+              // Explicit DB-clock time is essential after waiting on the
+              // per-user lock: PostgreSQL's default now() is the transaction
+              // start, which may belong to the previous daily window.
+              createdAt: now,
+              settledAt: now,
+            },
+          });
+
+          const wallet = await tx.wallet.upsert({
+            where: { userId },
+            create: { userId },
+            update: {},
+          });
+
+          // Paid: atomic guarded debit — the balance condition is what makes a
+          // negative balance / double-spend impossible without an explicit lock.
+          if (!useFree) {
+            const debit = await tx.wallet.updateMany({
+              where: { id: wallet.id, balance: { gte: stakeDec } },
+              data: { balance: { decrement: stakeDec } },
+            });
+            if (debit.count !== 1) {
+              throw new AppError("Insufficient coin balance", 400, "INSUFFICIENT_BALANCE");
+            }
+            const afterDebit = await tx.wallet.findUniqueOrThrow({ where: { id: wallet.id } });
+            await tx.walletTransaction.create({
+              data: {
+                walletId: wallet.id,
+                type: "DEBIT",
+                amount: stakeDec,
+                balanceAfter: afterDebit.balance,
+                reference: `game-roulette-bet:${created.id}`,
+                description: `Roulette bet (${betType.toLowerCase()})`,
+                createdAt: now,
+              },
+            });
           }
-          const afterDebit = await tx.wallet.findUniqueOrThrow({ where: { id: wallet.id } });
-          await tx.walletTransaction.create({
-            data: {
-              walletId: wallet.id,
-              type: "DEBIT",
-              amount: stakeDec,
-              balanceAfter: afterDebit.balance,
-              reference: `game-roulette-bet:${created.id}`,
-              description: `Roulette bet (${betType.toLowerCase()})`,
-            },
-          });
-        }
 
-        // Credit the payout on a win (single CREDIT row per round).
-        if (payout > 0) {
-          const afterCredit = await tx.wallet.update({
-            where: { id: wallet.id },
-            data: { balance: { increment: payoutDec } },
-          });
-          await tx.walletTransaction.create({
-            data: {
-              walletId: wallet.id,
-              type: "CREDIT",
-              amount: payoutDec,
-              balanceAfter: afterCredit.balance,
-              reference: `game-roulette:${created.id}`,
-              description: `Roulette win — pocket ${winningNumber}`,
-            },
-          });
-        }
+          // Credit the payout on a win (single CREDIT row per round).
+          if (payout > 0) {
+            const afterCredit = await tx.wallet.update({
+              where: { id: wallet.id },
+              data: { balance: { increment: payoutDec } },
+            });
+            await tx.walletTransaction.create({
+              data: {
+                walletId: wallet.id,
+                type: "CREDIT",
+                amount: payoutDec,
+                balanceAfter: afterCredit.balance,
+                reference: `game-roulette:${created.id}`,
+                description: `Roulette win — pocket ${winningNumber}`,
+                createdAt: now,
+              },
+            });
+          }
 
-        return created;
-      }, { timeout: 10_000 });
+          return { round: created, created: true };
+        },
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+          timeout: 10_000,
+        },
+      );
+      round = settled.round;
+      createdNewRound = settled.created;
     } catch (error) {
       // A concurrent duplicate lost the unique-key race — return the winner.
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
@@ -464,13 +706,13 @@ export class RouletteService {
       throw error;
     }
 
-    if (outcome.won && payout > 0) {
+    if (createdNewRound && round.won && num(round.payoutAmount) > 0) {
       // Fire-and-forget; delivery failure never blocks the response.
       void this.notifications.enqueue({
         userId,
         type: "WALLET",
         title: "Roulette win!",
-        body: `Pocket ${winningNumber} — you won ${payout} coins.`,
+        body: `Pocket ${round.winningNumber} — you won ${num(round.payoutAmount)} coins.`,
       });
     }
 
@@ -525,7 +767,7 @@ export class RouletteService {
 
     const snapshot = (round.configSnapshot ?? {}) as { weights?: number[] };
     const mode = round.probabilityMode as ProbabilityMode;
-    const weights = mode === "WEIGHTED" ? snapshot.weights ?? null : null;
+    const weights = mode === "WEIGHTED" ? (snapshot.weights ?? null) : null;
     const { winningNumber } = deriveOutcome({
       serverSeed: round.serverSeed,
       clientSeed: round.clientSeed,
@@ -541,6 +783,8 @@ export class RouletteService {
       clientSeed: round.clientSeed,
       nonce: round.nonce,
       probabilityMode: round.probabilityMode,
+      probabilityScheduleId: round.probabilityScheduleId,
+      policyResolvedAt: round.policyResolvedAt.toISOString(),
       weights: weights ?? null,
       recordedWinningNumber: round.winningNumber,
       computedWinningNumber: winningNumber,
@@ -551,21 +795,212 @@ export class RouletteService {
 
   // ---- admin: probability profiles ----
 
-  private async activeProfile() {
-    return this.prisma.rouletteProbabilityProfile.findFirst({
-      where: { active: true },
-      orderBy: { effectiveFrom: "desc" },
-    });
-  }
-
   async listProfiles(): Promise<ProbabilityProfileDto[]> {
-    const rows = await this.prisma.rouletteProbabilityProfile.findMany({
-      orderBy: [{ active: "desc" }, { createdAt: "desc" }],
+    const [rows, payouts] = await Promise.all([
+      this.prisma.rouletteProbabilityProfile.findMany({
+        orderBy: [{ active: "desc" }, { createdAt: "desc" }],
+      }),
+      this.payoutMultipliers(),
+    ]);
+    return rows.map((profile) => {
+      const dto = this.toProfileDto(profile);
+      const { mode, weights } = this.profileWeights(profile);
+      dto.estimatedRtp = Number(estimateRtp(mode, weights, payouts).overall.toFixed(4));
+      return dto;
     });
-    return rows.map((p) => this.toProfileDto(p));
   }
 
-  async createProfile(actor: AdminActor, input: CreateProfileInput): Promise<ProbabilityProfileDto> {
+  async listProbabilitySchedules(): Promise<ProbabilityScheduleDto[]> {
+    const payouts = await this.payoutMultipliers();
+    const { rows, now } = await this.prisma.$transaction(
+      async (tx) => {
+        await this.lockProbabilityPolicyRead(tx);
+        const now = await this.transactionNow(tx);
+        const rows = await tx.rouletteProbabilitySchedule.findMany({
+          include: { profile: true },
+          orderBy: { startsAt: "desc" },
+        });
+        return { rows, now };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+    );
+    return rows.map((row) => this.toProbabilityScheduleDto(row, now, payouts));
+  }
+
+  async createProbabilitySchedule(
+    actor: AdminActor,
+    input: CreateProbabilityScheduleInput,
+  ): Promise<ProbabilityScheduleDto> {
+    const startsAt = new Date(input.startsAt);
+    const endsAt = new Date(input.endsAt);
+    if (
+      !Number.isFinite(startsAt.getTime()) ||
+      !Number.isFinite(endsAt.getTime()) ||
+      startsAt.getTime() >= endsAt.getTime()
+    ) {
+      throw new BadRequestError("endsAt must be later than startsAt");
+    }
+    const payouts = await this.payoutMultipliers();
+
+    try {
+      const { schedule, now } = await this.prisma.$transaction(
+        async (tx) => {
+          await this.lockProbabilityPolicyWrite(tx);
+          const now = await this.transactionNow(tx);
+          if (endsAt.getTime() <= now.getTime()) {
+            throw new BadRequestError("A probability schedule must end in the future");
+          }
+          // "Start now" requests inevitably arrive a little late. Canonicalize
+          // any past start to the locked DB instant so declared/effective windows match.
+          const effectiveStartsAt = startsAt.getTime() < now.getTime() ? now : startsAt;
+
+          const profile = await tx.rouletteProbabilityProfile.findUnique({
+            where: { id: input.profileId },
+          });
+          if (!profile) throw new NotFoundError("Probability profile not found");
+
+          const { mode, weights } = this.profileWeights(profile);
+          const rtp = estimateRtp(mode, weights, payouts).overall;
+          const overlap = await tx.rouletteProbabilitySchedule.findFirst({
+            where: {
+              cancelledAt: null,
+              startsAt: { lt: endsAt },
+              endsAt: { gt: effectiveStartsAt },
+            },
+            select: { id: true, startsAt: true, endsAt: true },
+            orderBy: { startsAt: "asc" },
+          });
+          if (overlap) throw probabilityScheduleOverlap(overlap);
+
+          const schedule = await tx.rouletteProbabilitySchedule.create({
+            data: {
+              profileId: profile.id,
+              startsAt: effectiveStartsAt,
+              endsAt,
+              reason: input.reason.trim(),
+              createdById: actor.id,
+            },
+            include: { profile: true },
+          });
+
+          await this.writeScheduleAudit(
+            tx,
+            actor,
+            "ROULETTE_SCHEDULE_CREATE",
+            schedule.id,
+            null,
+            {
+              profileId: profile.id,
+              profileName: profile.name,
+              mode,
+              numberWeights: weights,
+              estimatedRtp: Number(rtp.toFixed(4)),
+              startsAt: effectiveStartsAt.toISOString(),
+              endsAt: endsAt.toISOString(),
+              reason: schedule.reason,
+            },
+            201,
+          );
+
+          return { schedule, now };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+      );
+
+      return this.toProbabilityScheduleDto(schedule, now, payouts);
+    } catch (error) {
+      // PostgreSQL's exclusion constraint is the authoritative race-safe guard.
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2004") {
+        throw probabilityScheduleOverlap();
+      }
+      throw error;
+    }
+  }
+
+  async cancelProbabilitySchedule(
+    actor: AdminActor,
+    id: string,
+    input: CancelProbabilityScheduleInput,
+  ): Promise<ProbabilityScheduleDto> {
+    const payouts = await this.payoutMultipliers();
+    const { schedule, now } = await this.prisma.$transaction(
+      async (tx) => {
+        await this.lockProbabilityPolicyWrite(tx);
+        const now = await this.transactionNow(tx);
+        const current = await tx.rouletteProbabilitySchedule.findUnique({
+          where: { id },
+          include: { profile: true },
+        });
+        if (!current) throw new NotFoundError("Probability schedule not found");
+        if (current.cancelledAt)
+          throw new ConflictError("Probability schedule is already cancelled");
+        if (current.endsAt.getTime() <= now.getTime()) {
+          throw new ConflictError("An expired probability schedule cannot be cancelled");
+        }
+
+        const updated = await tx.rouletteProbabilitySchedule.updateMany({
+          where: { id, cancelledAt: null },
+          data: {
+            cancelledAt: now,
+            cancelledById: actor.id,
+            cancelReason: input.reason.trim(),
+          },
+        });
+        if (updated.count !== 1) {
+          throw new ConflictError("Probability schedule was cancelled by another request");
+        }
+
+        const schedule = await tx.rouletteProbabilitySchedule.findUniqueOrThrow({
+          where: { id },
+          include: { profile: true },
+        });
+        await this.writeScheduleAudit(
+          tx,
+          actor,
+          "ROULETTE_SCHEDULE_CANCEL",
+          schedule.id,
+          {
+            cancelledAt: null,
+            cancelReason: null,
+            startsAt: current.startsAt.toISOString(),
+            endsAt: current.endsAt.toISOString(),
+            profileId: current.profileId,
+          },
+          {
+            cancelledAt: now.toISOString(),
+            cancelReason: schedule.cancelReason,
+            reason: schedule.cancelReason,
+          },
+          200,
+        );
+        return { schedule, now };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+    );
+
+    return this.toProbabilityScheduleDto(schedule, now, payouts);
+  }
+
+  async currentProbabilityPolicy(): Promise<CurrentProbabilityPolicyDto> {
+    const payouts = await this.payoutMultipliers();
+    const policy = await this.resolveProbabilityPolicy(payouts);
+    return {
+      source: policy.source,
+      mode: policy.mode,
+      scheduleId: policy.schedule?.id ?? null,
+      profileId: policy.schedule?.profileId ?? null,
+      profileName: policy.schedule?.profile.name ?? null,
+      estimatedRtp: policy.estimatedRtp,
+      startsAt: policy.schedule?.startsAt.toISOString() ?? null,
+      endsAt: policy.schedule?.endsAt.toISOString() ?? null,
+      nextTransitionAt: policy.nextTransitionAt?.toISOString() ?? null,
+    };
+  }
+
+  async createProfile(
+    actor: AdminActor,
+    input: CreateProfileInput,
+  ): Promise<ProbabilityProfileDto> {
     const mode: ProbabilityMode = input.mode;
     let weights: number[] = Array.from({ length: 37 }, () => 1); // FAIR default
     if (mode === "WEIGHTED") {
@@ -576,61 +1011,40 @@ export class RouletteService {
     const payouts = await this.payoutMultipliers();
     const rtp = estimateRtp(mode, weights, payouts).overall;
 
-    const created = await this.prisma.rouletteProbabilityProfile.create({
-      data: {
-        name: input.name,
+    const created = await this.prisma.$transaction(async (tx) => {
+      const profile = await tx.rouletteProbabilityProfile.create({
+        data: {
+          name: input.name.trim(),
+          mode,
+          numberWeights: weights as unknown as Prisma.InputJsonValue,
+          estimatedRtp: new Prisma.Decimal(rtp.toFixed(4)),
+          active: false,
+          createdById: actor.id,
+        },
+      });
+      await this.writeProfileAudit(tx, actor, "ROULETTE_PROFILE_CREATE", profile.id, null, {
+        name: profile.name,
         mode,
-        numberWeights: weights as unknown as Prisma.InputJsonValue,
-        estimatedRtp: new Prisma.Decimal(rtp.toFixed(4)),
-        active: false,
-        createdById: actor.id,
-      },
-    });
-
-    await this.writeAudit(actor, "ROULETTE_PROFILE_CREATE", created.id, null, {
-      name: input.name,
-      mode,
-      estimatedRtp: rtp,
-      reason: input.reason ?? null,
+        numberWeights: weights,
+        estimatedRtp: Number(rtp.toFixed(4)),
+        reason: input.reason?.trim() || null,
+      });
+      return profile;
     });
 
     return this.toProfileDto(created);
   }
 
   async activateProfile(
-    actor: AdminActor,
-    id: string,
-    reason: string,
+    _actor: AdminActor,
+    _id: string,
+    _reason: string,
   ): Promise<ProbabilityProfileDto> {
-    const target = await this.prisma.rouletteProbabilityProfile.findUnique({ where: { id } });
-    if (!target) throw new NotFoundError("Probability profile not found");
-    if (target.mode === "WEIGHTED") {
-      const check = validateWeights(target.numberWeights);
-      if (!check.valid) throw new BadRequestError("Profile weights are invalid", check.errors);
-    }
-
-    const previous = await this.activeProfile();
-
-    const activated = await this.prisma.$transaction(async (tx) => {
-      await tx.rouletteProbabilityProfile.updateMany({
-        where: { active: true },
-        data: { active: false },
-      });
-      return tx.rouletteProbabilityProfile.update({
-        where: { id },
-        data: { active: true, effectiveFrom: new Date() },
-      });
-    });
-
-    await this.writeAudit(
-      actor,
-      "ROULETTE_PROFILE_ACTIVATE",
-      id,
-      previous ? { id: previous.id, name: previous.name, estimatedRtp: num(previous.estimatedRtp) } : null,
-      { id: activated.id, name: activated.name, estimatedRtp: num(activated.estimatedRtp), reason },
+    throw new AppError(
+      "Immediate probability-profile activation is retired. Create a timed probability schedule.",
+      410,
+      "ROULETTE_PROFILE_ACTIVATION_RETIRED",
     );
-
-    return this.toProfileDto(activated);
   }
 
   async previewRtp(input: EstimateRtpInput): Promise<RtpEstimateDto> {
@@ -643,7 +1057,8 @@ export class RouletteService {
       weights = input.numberWeights as number[];
     }
     const est = estimateRtp(input.mode, weights, payouts);
-    if (est.overall > 1) warnings.push("Overall RTP exceeds 100% — the system pays out more than it takes.");
+    if (est.overall > 1)
+      warnings.push("Overall RTP exceeds 100% — the system pays out more than it takes.");
     if (est.byCategory.maxNumberRtp > 1) {
       warnings.push(
         "A single number's RTP exceeds 100% — a player betting only that number profits long-term.",
@@ -672,8 +1087,12 @@ export class RouletteService {
       ...(query.minAmount !== undefined || query.maxAmount !== undefined
         ? {
             betAmount: {
-              ...(query.minAmount !== undefined ? { gte: new Prisma.Decimal(query.minAmount) } : {}),
-              ...(query.maxAmount !== undefined ? { lte: new Prisma.Decimal(query.maxAmount) } : {}),
+              ...(query.minAmount !== undefined
+                ? { gte: new Prisma.Decimal(query.minAmount) }
+                : {}),
+              ...(query.maxAmount !== undefined
+                ? { lte: new Prisma.Decimal(query.maxAmount) }
+                : {}),
             },
           }
         : {}),
@@ -758,7 +1177,13 @@ export class RouletteService {
         where: { ...where, won: true },
         orderBy: { payoutAmount: "desc" },
         take: 10,
-        select: { id: true, userId: true, payoutAmount: true, winningNumber: true, createdAt: true },
+        select: {
+          id: true,
+          userId: true,
+          payoutAmount: true,
+          winningNumber: true,
+          createdAt: true,
+        },
       }),
       this.prisma.rouletteRound.findMany({ where, orderBy: { createdAt: "desc" }, take: 10 }),
       this.prisma.$queryRaw<{ date: string; games: number; wagered: number; won: number }[]>`
@@ -838,10 +1263,7 @@ export class RouletteService {
     };
   }
 
-  async auditLogs(
-    page: number,
-    limit: number,
-  ): Promise<{ items: unknown[]; meta: PageMeta }> {
+  async auditLogs(page: number, limit: number): Promise<{ items: unknown[]; meta: PageMeta }> {
     const where: Prisma.AuditLogWhereInput = {
       OR: [{ action: { startsWith: "ROULETTE_" } }, { path: { contains: "roulette" } }],
     };
@@ -924,8 +1346,36 @@ export class RouletteService {
       clientSeed: round.clientSeed,
       nonce: round.nonce,
       probabilityProfileId: round.probabilityProfileId,
+      probabilityScheduleId: round.probabilityScheduleId,
+      policyResolvedAt: round.policyResolvedAt.toISOString(),
       createdAt: round.createdAt.toISOString(),
       settledAt: round.settledAt ? round.settledAt.toISOString() : null,
+    };
+  }
+
+  private toProbabilityScheduleDto(
+    schedule: ProbabilityScheduleWithProfile,
+    now: Date,
+    payouts: PayoutMultipliers,
+  ): ProbabilityScheduleDto {
+    const { mode, weights } = this.profileWeights(schedule.profile);
+    const estimatedRtp = estimateRtp(mode, weights, payouts).overall;
+    return {
+      id: schedule.id,
+      profileId: schedule.profileId,
+      startsAt: schedule.startsAt.toISOString(),
+      endsAt: schedule.endsAt.toISOString(),
+      reason: schedule.reason,
+      createdAt: schedule.createdAt.toISOString(),
+      cancelledAt: schedule.cancelledAt?.toISOString() ?? null,
+      cancelReason: schedule.cancelReason,
+      status: probabilityScheduleStatusAt(schedule, now),
+      profile: {
+        id: schedule.profile.id,
+        name: schedule.profile.name,
+        mode,
+        estimatedRtp: Number(estimatedRtp.toFixed(4)),
+      },
     };
   }
 
@@ -957,29 +1407,115 @@ export class RouletteService {
    * Immutable audit entry for a probability/payout change: old value, new value,
    * reason, admin id + IP/UA — reusing the shared AuditLog table.
    */
-  private async writeAudit(
+  private async writeProfileAudit(
+    tx: Prisma.TransactionClient,
     actor: AdminActor,
     action: string,
     entityId: string,
     oldValue: unknown,
     newValue: unknown,
   ): Promise<void> {
-    await this.prisma.auditLog
-      .create({
-        data: {
-          userId: actor.id,
-          userEmail: actor.email ?? null,
-          action,
-          method: "ADMIN",
-          path: `roulette/profiles/${entityId}`,
-          statusCode: 200,
-          ip: actor.ip ?? null,
-          userAgent: actor.userAgent ?? null,
-          metadata: { entityType: "RouletteProbabilityProfile", entityId, oldValue, newValue } as Prisma.InputJsonValue,
-        },
-      })
-      .catch(() => undefined);
+    await tx.auditLog.create({
+      data: {
+        userId: actor.id,
+        userEmail: actor.email ?? null,
+        action,
+        method: "POST",
+        path: `roulette/profiles/${entityId}`,
+        statusCode: 201,
+        ip: actor.ip ?? null,
+        userAgent: actor.userAgent ?? null,
+        metadata: {
+          entityType: "RouletteProbabilityProfile",
+          entityId,
+          oldValue,
+          newValue,
+        } as Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  /** Rich schedule audits are part of the same transaction as the mutation. */
+  private async writeScheduleAudit(
+    tx: Prisma.TransactionClient,
+    actor: AdminActor,
+    action: string,
+    entityId: string,
+    oldValue: unknown,
+    newValue: unknown,
+    statusCode: number,
+  ): Promise<void> {
+    await tx.auditLog.create({
+      data: {
+        userId: actor.id,
+        userEmail: actor.email ?? null,
+        action,
+        method: "POST",
+        path: `roulette/probability-schedules/${entityId}`,
+        statusCode,
+        ip: actor.ip ?? null,
+        userAgent: actor.userAgent ?? null,
+        metadata: {
+          entityType: "RouletteProbabilitySchedule",
+          entityId,
+          oldValue,
+          newValue,
+        } as Prisma.InputJsonValue,
+      },
+    });
   }
 }
 
 const conflict = (message: string): AppError => new AppError(message, 409, "CONFLICT");
+
+const payoutCapacityError = (
+  capacity: PayoutCapacity,
+  maxPayoutPerGame: number,
+  dailyPayoutRemaining: number,
+): AppError => {
+  const details = {
+    fullPayout: capacity.fullPayout,
+    maxPayoutPerGame,
+    dailyPayoutRemaining,
+  };
+  if (capacity.limit === "DAILY") {
+    return new AppError(
+      "This bet's full win exceeds your remaining daily payout allowance",
+      409,
+      "ROULETTE_DAILY_PAYOUT_CAP",
+      details,
+    );
+  }
+  if (capacity.limit === "PER_GAME") {
+    return new AppError(
+      "This bet's full win exceeds the per-spin payout cap",
+      400,
+      "ROULETTE_GAME_PAYOUT_CAP",
+      details,
+    );
+  }
+  return new AppError(
+    "This bet has no payable configured win",
+    400,
+    "ROULETTE_ZERO_PAYOUT",
+    details,
+  );
+};
+
+const probabilityScheduleOverlap = (overlap?: {
+  id: string;
+  startsAt: Date;
+  endsAt: Date;
+}): AppError =>
+  new AppError(
+    "The probability schedule overlaps an existing non-cancelled schedule",
+    409,
+    "ROULETTE_SCHEDULE_OVERLAP",
+    overlap
+      ? {
+          conflictingScheduleId: overlap.id,
+          startsAt: overlap.startsAt.toISOString(),
+          endsAt: overlap.endsAt.toISOString(),
+        }
+      : undefined,
+  );
