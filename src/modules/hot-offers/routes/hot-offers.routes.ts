@@ -23,6 +23,8 @@ import {
 } from "../schemas/hot-offers.schema.js";
 import {
   listSubmissionsQuerySchema,
+  submissionCountQuerySchema,
+  type SubmissionCountQuery,
   reviewSubmissionSchema,
   submitProofSchema,
   type ListSubmissionsQuery,
@@ -192,6 +194,34 @@ export const hotOffersRoutes = async (app: FastifyInstance): Promise<void> => {
       },
     },
     controller.adminListSubmissions,
+  );
+
+  app.get<{ Querystring: SubmissionCountQuery }>(
+    "/admin/submissions/count",
+    {
+      preHandler: [authGuard, adminOnly],
+      schema: {
+        tags: ["hot-offers"],
+        summary: "Count proof submissions without loading images or users (admin)",
+        security: [{ bearerAuth: [] }],
+        querystring: submissionCountQuerySchema,
+      },
+    },
+    controller.adminSubmissionCount,
+  );
+
+  app.get<{ Params: IdParams }>(
+    "/admin/submissions/:id",
+    {
+      preHandler: [authGuard, adminOnly],
+      schema: {
+        tags: ["hot-offers"],
+        summary: "Load the complete proof image history on demand (admin)",
+        security: [{ bearerAuth: [] }],
+        params: idParamsSchema,
+      },
+    },
+    controller.adminSubmissionDetails,
   );
 
   app.patch<{ Params: IdParams; Body: ReviewSubmissionInput }>(

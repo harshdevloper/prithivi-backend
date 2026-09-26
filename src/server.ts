@@ -1,16 +1,18 @@
 import { buildApp } from "./app.js";
 import { env } from "./config/env.js";
-import { startLudoRuntime, startScheduler } from "./workers/index.js";
+import { startLudoRuntime, startProofRetention, startScheduler } from "./workers/index.js";
 
 const start = async (): Promise<void> => {
   const app = await buildApp();
   const stopScheduler = startScheduler(app);
+  const stopProofRetention = startProofRetention(app);
   const stopLudoRuntime = startLudoRuntime(app);
 
   const shutdown = async (signal: string): Promise<void> => {
     app.log.info({ signal }, "shutting down");
     try {
       stopScheduler();
+      stopProofRetention();
       stopLudoRuntime();
       await app.close();
       process.exit(0);

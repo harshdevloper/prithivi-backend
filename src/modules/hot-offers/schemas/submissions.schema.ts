@@ -36,8 +36,16 @@ export const listSubmissionsQuerySchema = z.object({
   status: submissionStatus.optional(),
   // Admin-only: filter by the submission's offer.isProduct. Omitted = unfiltered.
   product: z.enum(["true", "false"]).optional(),
+  // Opt-in for the admin queue; existing mobile consumers retain full history.
+  preview: z.enum(["true", "false"]).optional(),
 });
 export type ListSubmissionsQuery = z.infer<typeof listSubmissionsQuerySchema>;
+
+export const submissionCountQuerySchema = listSubmissionsQuerySchema.pick({
+  status: true,
+  product: true,
+});
+export type SubmissionCountQuery = z.infer<typeof submissionCountQuerySchema>;
 
 // ---- fraud overview (Module 4) ----
 
@@ -68,6 +76,7 @@ export const submissionSchema = z.object({
   screenshotUrl: z.string(),
   // Every proof image, newest first (a resubmit's images lead the array).
   screenshotUrls: z.array(z.string()),
+  screenshotCount: z.number().int().nonnegative().optional(),
   note: z.string().nullable(),
   status: submissionStatus,
   reviewNote: z.string().nullable(),
@@ -82,6 +91,7 @@ export type SubmissionDto = z.infer<typeof submissionSchema>;
 export type SubmissionWithRelations = OfferSubmission & {
   offer: Pick<Offer, "title" | "slug" | "thumbnailUrl">;
   images: { url: string }[];
+  _count?: { images: number };
   user?: Pick<User, "id" | "name" | "email">;
 };
 
@@ -96,6 +106,7 @@ export const toSubmissionDto = (
   offerThumbnailUrl: submission.offer.thumbnailUrl,
   screenshotUrl: submission.screenshotUrl,
   screenshotUrls: submission.images.map((image) => image.url),
+  ...(submission._count ? { screenshotCount: Math.max(1, submission._count.images) } : {}),
   note: submission.note,
   status: submission.status,
   reviewNote: submission.reviewNote,

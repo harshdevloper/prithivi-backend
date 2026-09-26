@@ -14,6 +14,7 @@ import type {
 } from "../schemas/hot-offers.schema.js";
 import type {
   ListSubmissionsQuery,
+  SubmissionCountQuery,
   ReviewSubmissionInput,
   SubmitProofInput,
 } from "../schemas/submissions.schema.js";
@@ -194,6 +195,20 @@ export class HotOffersController {
   ): Promise<void> => {
     const { items, meta } = await this.service.adminListSubmissions(request.query);
     reply.send(success(items, meta));
+  };
+
+  adminSubmissionCount = async (
+    request: FastifyRequest<{ Querystring: SubmissionCountQuery }>,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    reply.send(success(await this.service.adminSubmissionCount(request.query)));
+  };
+
+  adminSubmissionDetails = async (
+    request: FastifyRequest<{ Params: IdParams }>,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    reply.send(success(await this.service.adminSubmissionDetails(request.params.id)));
   };
 
   reviewSubmission = async (
