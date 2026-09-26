@@ -78,6 +78,20 @@ export const notificationsRoutes = async (app: FastifyInstance): Promise<void> =
     controller.listHistory,
   );
 
+  app.delete<{ Params: NotificationIdParams }>(
+    "/history/:id",
+    {
+      preHandler: [authGuard, superAdminOnly],
+      schema: {
+        tags: ["notifications"],
+        summary: "Cancel a scheduled push that has not been sent yet (super admin)",
+        security: [{ bearerAuth: [] }],
+        params: notificationIdParamsSchema,
+      },
+    },
+    controller.cancelScheduled,
+  );
+
   app.get<{ Querystring: ListNotificationsQuery }>(
     "/",
     {

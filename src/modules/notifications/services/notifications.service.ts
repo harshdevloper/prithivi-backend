@@ -34,7 +34,10 @@ export class NotificationsService {
    * in-process right away; scheduled sends stay SCHEDULED and the scheduler
    * poller (src/workers/index.ts) delivers them when due.
    */
-  async send(input: SendNotificationInput, sentById: string): Promise<{ queued: true; id: string }> {
+  async send(
+    input: SendNotificationInput,
+    sentById: string,
+  ): Promise<{ queued: true; id: string }> {
     const log = await this.notifications.createPushLog(toPushLogCreateData({ ...input, sentById }));
 
     const dueInFuture =
@@ -65,6 +68,13 @@ export class NotificationsService {
       take: query.limit,
     });
     return { items: items.map(toPushLogDto), meta: buildMeta(pagination, total) };
+  }
+
+  /** Cancels a scheduled push before the scheduler picks it up. */
+  async cancelScheduled(id: string): Promise<{ cancelled: true }> {
+    const removed = await this.notifications.deleteScheduledPushLog(id);
+    if (removed === 0) throw new NotFoundError("Scheduled push not found or already sent");
+    return { cancelled: true };
   }
 
   async registerDevice(userId: string, token: string, platform: string): Promise<void> {

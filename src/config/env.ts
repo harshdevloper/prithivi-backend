@@ -86,6 +86,10 @@ const envSchema = z.object({
   XOXODAY_CAMPAIGN_ID: z.string().default(""),
   XOXODAY_LINK_EXPIRY_DAYS: z.coerce.number().int().min(1).max(3650).default(90),
 
+  // CPX Research survey wall. Admin settings (cpx.*) override these.
+  CPX_APP_ID: z.string().optional(),
+  CPX_SECURE_HASH: z.string().optional(),
+
   // Razorpay Standard Checkout. The key id is returned only as part of an
   // authenticated order response; the secret never leaves this server.
   RAZORPAY_KEY_ID: z.string().optional(),

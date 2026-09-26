@@ -73,6 +73,14 @@ export class NotificationsController {
     reply.status(202).send(success(result));
   };
 
+  cancelScheduled = async (
+    request: FastifyRequest<{ Params: NotificationIdParams }>,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    const result = await this.notificationsService.cancelScheduled(request.params.id);
+    reply.send(success(result));
+  };
+
   listHistory = async (
     request: FastifyRequest<{ Querystring: ListPushLogsQuery }>,
     reply: FastifyReply,
