@@ -247,6 +247,33 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     min: 1,
     max: 3650,
   },
+  // --- Google AdMob (app banner ads) ---
+  {
+    key: "ads.enabled",
+    type: "BOOLEAN",
+    category: "Ads",
+    label: "Show banner ads in the app",
+    description: "Master switch for every AdMob banner in the app. Takes effect within ~5 minutes.",
+    default: "true",
+  },
+  {
+    key: "ads.bannerUnitId",
+    type: "STRING",
+    category: "Ads",
+    label: "Banner ad unit ID",
+    description:
+      "AdMob banner unit (ca-app-pub-…/…). Debug builds always use Google's test unit instead.",
+    default: "ca-app-pub-2061747225651398/8186074715",
+  },
+  {
+    key: "ads.placements",
+    type: "STRING",
+    category: "Ads",
+    label: "Pages that show a banner",
+    description:
+      "Comma-separated: home, explore, wallet, ranks. Remove a name to hide the banner on that page.",
+    default: "home,explore,wallet,ranks",
+  },
   // --- CPX Research surveys (coins credited by server-to-server postback) ---
   {
     key: "cpx.enabled",
