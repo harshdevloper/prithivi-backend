@@ -247,6 +247,33 @@ export const SETTINGS_REGISTRY: readonly SettingDefinition[] = [
     min: 1,
     max: 3650,
   },
+  // --- CPX Research surveys (coins credited by server-to-server postback) ---
+  {
+    key: "cpx.enabled",
+    type: "BOOLEAN",
+    category: "CPX Research",
+    label: "Show surveys in the app",
+    description: "Turns the Paid surveys card on/off. Postbacks are still credited while off.",
+    default: "false",
+  },
+  {
+    key: "cpx.appId",
+    type: "STRING",
+    category: "CPX Research",
+    label: "CPX app ID",
+    description: "Numeric App ID from the CPX publisher dashboard. Blank = use CPX_APP_ID env.",
+    default: "",
+  },
+  {
+    key: "cpx.secureHash",
+    type: "STRING",
+    category: "CPX Research",
+    label: "CPX secure hash",
+    description:
+      "App secure hash from CPX (signs the wall URL and verifies postbacks). Blank = keep existing / use CPX_SECURE_HASH env.",
+    default: "",
+    secret: true,
+  },
   // --- Referrals ---
   {
     key: "referral.enabled",

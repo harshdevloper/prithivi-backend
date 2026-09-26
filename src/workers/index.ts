@@ -21,6 +21,12 @@ const jobFromPushLog = (log: PushLog): NotificationJob => ({
   pushLogId: log.id,
 });
 
+/** A QUEUED row untouched for this long was interrupted (process restart
+ *  mid-send on the free tier is the usual cause) and is delivered again. */
+const STUCK_AFTER_MS = 3 * 60_000;
+/** Interrupted sends older than this are marked FAILED instead of retried. */
+const GIVE_UP_AFTER_MS = 2 * 60 * 60_000;
+
 /** Deliver every SCHEDULED push whose time has come. The guarded updateMany
  *  (status must still be SCHEDULED) makes each row deliver exactly once even
  *  if a sweep overlaps a restart. */
@@ -53,6 +59,38 @@ const deliverDue = async (app: FastifyInstance): Promise<void> => {
   }
 };
 
+/** Re-deliver QUEUED rows that stopped moving. The guarded updateMany bumps
+ *  updatedAt, so one sweep claims a row at a time and a row that keeps dying
+ *  is retried at most every STUCK_AFTER_MS until GIVE_UP_AFTER_MS. Inbox rows
+ *  already written by the interrupted attempt are not written twice. */
+const recoverStuck = async (app: FastifyInstance): Promise<void> => {
+  const now = Date.now();
+  const stuck = await app.prisma.pushLog.findMany({
+    where: { status: "QUEUED", updatedAt: { lt: new Date(now - STUCK_AFTER_MS) } },
+    orderBy: { createdAt: "asc" },
+    take: 20,
+  });
+
+  for (const log of stuck) {
+    const gaveUp = log.createdAt.getTime() < now - GIVE_UP_AFTER_MS;
+    const claimed = await app.prisma.pushLog.updateMany({
+      where: { id: log.id, status: "QUEUED", updatedAt: log.updatedAt },
+      data: gaveUp
+        ? { status: "FAILED", error: "Delivery was interrupted and not recovered within 2 hours" }
+        : { error: "Delivery interrupted — retrying" },
+    });
+    if (claimed.count === 0 || gaveUp) continue;
+
+    app.log.warn({ pushLogId: log.id }, "recovering interrupted push");
+    try {
+      await dispatchNotification(app, jobFromPushLog(log), { recoverSince: log.createdAt });
+    } catch (error) {
+      // Leave it QUEUED: the next sweep after STUCK_AFTER_MS tries again.
+      app.log.error({ err: error, pushLogId: log.id }, "push recovery failed");
+    }
+  }
+};
+
 /**
  * In-process scheduler for admin-scheduled pushes — replaces the BullMQ
  * delayed-job worker so the backend runs without Redis. Sweeps at boot
@@ -66,6 +104,7 @@ export const startScheduler = (app: FastifyInstance): (() => void) => {
     running = true;
     try {
       await deliverDue(app);
+      await recoverStuck(app);
     } catch (error) {
       app.log.error({ err: error }, "scheduled-push sweep failed");
     } finally {

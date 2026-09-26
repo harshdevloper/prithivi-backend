@@ -104,6 +104,12 @@ export class NotificationsRepository {
     await this.prisma.pushLog.update({ where: { id }, data });
   }
 
+  /** Removes a push that has not been delivered yet; 0 when it already went out. */
+  async deleteScheduledPushLog(id: string): Promise<number> {
+    const result = await this.prisma.pushLog.deleteMany({ where: { id, status: "SCHEDULED" } });
+    return result.count;
+  }
+
   listPushLogs(params: { skip: number; take: number }): Promise<[PushLogWithSender[], number]> {
     return Promise.all([
       this.prisma.pushLog.findMany({

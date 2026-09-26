@@ -13,6 +13,7 @@ import { settingsRoutes, publicConfigRoutes } from "../modules/settings/routes/s
 import { redemptionsRoutes } from "../modules/redemptions/routes/redemptions.routes.js";
 import { appAssetsRoutes } from "../modules/app-assets/routes/app-assets.routes.js";
 import { missionsRoutes } from "../modules/missions/routes/missions.routes.js";
+import { cpxRoutes } from "../modules/cpx/cpx.routes.js";
 import { gameRoutes } from "../modules/game/routes/game.routes.js";
 import { rouletteRoutes } from "../modules/roulette/routes/roulette.routes.js";
 import { coinPurchaseRoutes } from "../modules/payments/routes/coin-purchase.routes.js";
@@ -57,6 +58,7 @@ export const registerRoutes = async (app: FastifyInstance): Promise<void> => {
       await api.register(redemptionsRoutes, { prefix: "/redemptions" });
       await api.register(appAssetsRoutes, { prefix: "/app-assets" });
       await api.register(missionsRoutes, { prefix: "/missions" });
+      await api.register(cpxRoutes, { prefix: "/cpx" });
       await api.register(gameRoutes, { prefix: "/game" });
       await api.register(rouletteRoutes, { prefix: "/game" });
       await api.register(coinPurchaseRoutes, { prefix: "/wallet/coin-purchases" });

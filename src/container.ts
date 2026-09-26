@@ -26,6 +26,7 @@ import { RedemptionsService } from "./modules/redemptions/services/redemptions.s
 import { VoucherProviderRegistry } from "./modules/redemptions/providers/voucher-provider-registry.js";
 import { AppAssetsService } from "./modules/app-assets/services/app-assets.service.js";
 import { MissionsService } from "./modules/missions/services/missions.service.js";
+import { CpxService } from "./modules/cpx/cpx.service.js";
 import { GameService } from "./modules/game/services/game.service.js";
 import { RouletteService } from "./modules/roulette/services/roulette.service.js";
 import { CoinPurchaseService } from "./modules/payments/services/coin-purchase.service.js";
@@ -73,6 +74,7 @@ export interface Container {
   redemptionsService: RedemptionsService;
   appAssetsService: AppAssetsService;
   missionsService: MissionsService;
+  cpxService: CpxService;
   gameService: GameService;
   rouletteService: RouletteService;
   coinPurchaseService: CoinPurchaseService;
@@ -174,6 +176,7 @@ export const buildContainer = (app: FastifyInstance): Container => {
   );
   const appAssetsService = new AppAssetsService(prisma);
   const missionsService = new MissionsService(prisma, notificationsService);
+  const cpxService = new CpxService(prisma, settingsService, notificationsService, env);
   const ludoHub = new LudoRealtimeHub();
   const gameService = new GameService(prisma, settingsService, notificationsService, ludoHub);
   const rouletteService = new RouletteService(prisma, settingsService, notificationsService);
@@ -214,6 +217,7 @@ export const buildContainer = (app: FastifyInstance): Container => {
     redemptionsService,
     appAssetsService,
     missionsService,
+    cpxService,
     gameService,
     rouletteService,
     coinPurchaseService,

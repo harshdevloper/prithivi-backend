@@ -294,10 +294,13 @@ export const upsertOfferSchema = z.object({
   difficulty: difficultySchema.default("EASY"),
   estimatedTime: z.string().max(40).optional().nullable(),
   rating: z.number().min(0).max(5).optional().nullable(),
+  // Any http(s) link (Play Store, referral/tracking link, website). Play Store
+  // links additionally enable install detection (?id= package). The scheme
+  // check blocks javascript:/data: URLs, which .url() alone accepts.
   playStoreUrl: z
     .string()
     .url()
-    .startsWith("https://play.google.com/", "Must be a Play Store URL")
+    .regex(/^https?:\/\//i, "Must be an http(s) link")
     .max(2048),
   isProduct: z.boolean().default(false),
   brandLogoUrl: z.string().url().max(2048).optional().nullable(),
