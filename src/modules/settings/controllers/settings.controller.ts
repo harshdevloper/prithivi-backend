@@ -18,6 +18,12 @@ export class SettingsController {
           webBaseUrl: await this.service.getString("web.baseUrl"),
           telegramUrl: await this.service.getString("social.telegramUrl"),
           linkedinUrl: await this.service.getString("social.linkedinUrl"),
+          adsEnabled: await this.service.getBoolean("ads.enabled"),
+          bannerAdUnitId: await this.service.getString("ads.bannerUnitId"),
+          adPlacements: (await this.service.getString("ads.placements"))
+            .split(",")
+            .map((p) => p.trim().toLowerCase())
+            .filter(Boolean),
         }),
       );
   };
