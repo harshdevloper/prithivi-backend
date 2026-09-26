@@ -623,6 +623,7 @@ model OfferSubmission {
 
   @@unique([offerId, userId]) // one submission per user per offer (resubmit reuses the row)
   @@index([status, createdAt])
+  @@index([status, createdAt(sort: Desc), id], map: "offer_submissions_admin_queue_idx")
   @@index([userId, createdAt])
   @@index([userId, status])
   @@map("offer_submissions")

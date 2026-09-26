@@ -120,6 +120,32 @@ export const startScheduler = (app: FastifyInstance): (() => void) => {
   return () => clearInterval(timer);
 };
 
+/** Catch up at boot, then remove managed proof images after 90 days. */
+export const startProofRetention = (app: FastifyInstance): (() => void) => {
+  let running = false;
+  const sweep = async (): Promise<void> => {
+    if (running) return;
+    running = true;
+    try {
+      const result = await app.di.uploadsService.retireExpiredProofs();
+      if (result.retired > 0) {
+        app.log.info({ count: result.retired }, "expired proof images removed");
+      }
+      if (result.failedIds.length > 0) {
+        app.log.error({ mediaIds: result.failedIds }, "expired proof deletion failed");
+      }
+    } catch (error) {
+      app.log.error({ err: error }, "proof retention sweep failed");
+    } finally {
+      running = false;
+    }
+  };
+  void sweep();
+  const timer = setInterval(() => void sweep(), 10 * 60_000);
+  timer.unref();
+  return () => clearInterval(timer);
+};
+
 /** Authoritative Ludo timeout/reconnect/queue sweeps plus socket heartbeat
  * eviction. Both timers are stopped by the server shutdown path. */
 export const startLudoRuntime = (app: FastifyInstance): (() => void) => {

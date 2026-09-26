@@ -591,8 +591,23 @@ export class HotOffersService {
       take: query.limit,
       status: query.status,
       isProduct: query.product === undefined ? undefined : query.product === "true",
+      preview: query.preview === "true",
     });
     return { items: items.map((s) => toSubmissionDto(s, true)), meta: buildMeta(query, total) };
+  }
+
+  async adminSubmissionCount(query: Pick<ListSubmissionsQuery, "status" | "product">): Promise<{ total: number }> {
+    const total = await this.repo.countSubmissionsAdmin({
+      status: query.status,
+      isProduct: query.product === undefined ? undefined : query.product === "true",
+    });
+    return { total };
+  }
+
+  async adminSubmissionDetails(id: string): Promise<SubmissionDto> {
+    const submission = await this.repo.findSubmissionDetails(id);
+    if (!submission) throw new NotFoundError("Submission not found");
+    return toSubmissionDto(submission, true);
   }
 
   /** Admin approve (credits wallet), reject, or ask for more proof. */

@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { unlink, writeFile } from "node:fs/promises";
+import { readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Readable } from "node:stream";
 import {
@@ -16,9 +16,12 @@ import sharp from "sharp";
 import { BadRequestError, ConflictError, NotFoundError } from "../../../common/errors.js";
 import { env } from "../../../config/env.js";
 import { UPLOADS } from "../../../config/constants.js";
+import { createThumbnail, ThumbnailCache, type ThumbnailEdge } from "./image-thumbnails.js";
 
 export const MEDIA_PURPOSES = ["PROOF", "CONTENT", "AVATAR", "NOTIFICATION"] as const;
 export type MediaPurpose = (typeof MEDIA_PURPOSES)[number];
+export const PROOF_RETENTION_DAYS = 90;
+const PROOF_RETENTION_MS = PROOF_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
 export interface UploadResult {
   id: string;
@@ -75,6 +78,7 @@ export const optimizeImage = async (
 export class UploadsService {
   private readonly cloudinaryEnabled = Boolean(env.CLOUDINARY_URL);
   private readonly s3: S3Client | null;
+  private readonly thumbnails = new ThumbnailCache();
 
   constructor(private readonly prisma: PrismaClient) {
     if (this.cloudinaryEnabled) cloudinary.config({ secure: true });
@@ -160,15 +164,39 @@ export class UploadsService {
   async contentLocation(
     id: string,
     token: string,
+    edge?: ThumbnailEdge,
   ): Promise<{
     redirectUrl?: string;
     localPath?: string;
+    body?: Buffer;
     mimeType: string;
   }> {
     const asset = await this.prisma.mediaAsset.findFirst({
       where: { id, accessToken: token, status: "ACTIVE" },
+      select: { id: true, storageProvider: true, objectKey: true, sourceUrl: true, mimeType: true },
     });
     if (!asset) throw new NotFoundError("Image not found");
+
+    if (edge && asset.storageProvider !== "cloudinary") {
+      // Authorization is checked on every request, including cache hits and
+      // retired images. No arbitrary URL fetch or permanent extra object is needed.
+      const body = await this.thumbnails.getOrCreate(`${asset.id}:${edge}`, async () => {
+        let original: Buffer;
+        if (asset.storageProvider === "s3") {
+          if (!this.s3 || !env.AWS_S3_BUCKET) throw new NotFoundError("Image storage unavailable");
+          const source = await this.s3.send(new GetObjectCommand({
+            Bucket: env.AWS_S3_BUCKET,
+            Key: asset.objectKey,
+          }));
+          if (!source.Body) throw new NotFoundError("Image not found");
+          original = Buffer.from(await source.Body.transformToByteArray());
+        } else {
+          original = await readFile(path.join(path.resolve(process.cwd(), env.UPLOADS_DIR), asset.objectKey));
+        }
+        return createThumbnail(original, edge);
+      });
+      if (body) return { body, mimeType: "image/webp" };
+    }
 
     if (asset.storageProvider === "s3") {
       if (!this.s3 || !env.AWS_S3_BUCKET) throw new NotFoundError("Image storage unavailable");
@@ -182,7 +210,12 @@ export class UploadsService {
       };
     }
     if (asset.storageProvider === "cloudinary" && asset.sourceUrl) {
-      return { redirectUrl: asset.sourceUrl, mimeType: asset.mimeType };
+      return {
+        redirectUrl: edge
+          ? asset.sourceUrl.replace("/image/upload/", `/image/upload/c_limit,w_${edge},h_${edge},q_auto,f_webp/`)
+          : asset.sourceUrl,
+        mimeType: asset.mimeType,
+      };
     }
     return {
       localPath: path.join(path.resolve(process.cwd(), env.UPLOADS_DIR), asset.objectKey),
@@ -251,6 +284,39 @@ export class UploadsService {
     return { id, status: "RETIRED", references };
   }
 
+  /** Remove expired proof objects in bounded batches. Failed deletes stay ACTIVE
+   * so the next sweep can retry them. References remain as audit history. */
+  async retireExpiredProofs(now = new Date()): Promise<{ retired: number; failedIds: string[] }> {
+    const assets = await this.prisma.mediaAsset.findMany({
+      where: {
+        purpose: "PROOF",
+        status: "ACTIVE",
+        createdAt: { lte: new Date(now.getTime() - PROOF_RETENTION_MS) },
+      },
+      orderBy: { createdAt: "asc" },
+      take: 500,
+    });
+    let retired = 0;
+    const failedIds: string[] = [];
+    for (const asset of assets) {
+      try {
+        await this.deleteStored({
+          provider: asset.storageProvider as StoredImage["provider"],
+          objectKey: asset.objectKey,
+          ...(asset.sourceUrl ? { sourceUrl: asset.sourceUrl } : {}),
+        });
+        const result = await this.prisma.mediaAsset.updateMany({
+          where: { id: asset.id, status: "ACTIVE" },
+          data: { status: "RETIRED", retiredAt: now },
+        });
+        retired += result.count;
+      } catch {
+        failedIds.push(asset.id);
+      }
+    }
+    return { retired, failedIds };
+  }
+
   private async uploadToS3(body: Buffer, purpose: MediaPurpose, id: string): Promise<StoredImage> {
     const prefix = env.AWS_S3_KEY_PREFIX.replace(/^\/+|\/+$/g, "");
     const key = `${prefix}/${purpose.toLowerCase()}/${new Date().toISOString().slice(0, 10)}/${id}.webp`;
@@ -307,11 +373,12 @@ export class UploadsService {
 
   private async deleteStored(stored: StoredImage): Promise<void> {
     if (stored.provider === "s3") {
-      if (this.s3 && env.AWS_S3_BUCKET) {
-        await this.s3.send(
-          new DeleteObjectCommand({ Bucket: env.AWS_S3_BUCKET, Key: stored.objectKey }),
-        );
+      if (!this.s3 || !env.AWS_S3_BUCKET) {
+        throw new Error("S3 image storage is unavailable");
       }
+      await this.s3.send(
+        new DeleteObjectCommand({ Bucket: env.AWS_S3_BUCKET, Key: stored.objectKey }),
+      );
       return;
     }
     if (stored.provider === "cloudinary") {

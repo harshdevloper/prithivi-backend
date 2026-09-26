@@ -2,6 +2,7 @@ import { createReadStream } from "node:fs";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { BadRequestError } from "../../../common/errors.js";
 import { success } from "../../../common/response.js";
+import { THUMBNAIL_EDGES, type ThumbnailEdge } from "../services/image-thumbnails.js";
 import {
   MEDIA_PURPOSES,
   type MediaPurpose,
@@ -39,10 +40,19 @@ export class UploadsController {
 
   content = async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     const { id } = request.params as { id: string };
-    const token = String((request.query as { token?: string }).token ?? "");
+    const query = request.query as { token?: string; size?: string };
+    const token = String(query.token ?? "");
     if (!token) throw new BadRequestError("Missing image access token");
-    const location = await this.uploadsService.contentLocation(id, token);
+    const size = query.size === undefined ? undefined : Number(query.size);
+    if (size !== undefined && !THUMBNAIL_EDGES.includes(size as ThumbnailEdge)) {
+      throw new BadRequestError("Image size must be 160 or 640");
+    }
+    const location = await this.uploadsService.contentLocation(id, token, size as ThumbnailEdge | undefined);
     reply.header("Cache-Control", "private, max-age=300, stale-while-revalidate=60");
+    if (location.body) {
+      reply.type(location.mimeType).send(location.body);
+      return;
+    }
     if (location.redirectUrl) {
       reply.redirect(location.redirectUrl);
       return;

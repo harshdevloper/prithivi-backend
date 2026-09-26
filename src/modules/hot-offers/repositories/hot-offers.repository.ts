@@ -23,8 +23,8 @@ import { ConflictError } from "../../../common/errors.js";
 const SUBMISSION_OFFER_SELECT = {
   offer: { select: { title: true, slug: true, thumbnailUrl: true } },
   // Every proof image newest-first, so a resubmit's images lead the array.
-  images: { select: { url: true }, orderBy: { createdAt: "desc" as const } },
-} as const;
+  images: { select: { url: true }, orderBy: [{ createdAt: "desc" as const }, { id: "asc" as const }] },
+} satisfies Prisma.OfferSubmissionInclude;
 
 const CATEGORY_INCLUDE = {
   feedbackPage: { select: { id: true } },
@@ -414,6 +414,25 @@ export class HotOffersRepository {
     return this.prisma.offerSubmission.findUnique({ where: { id } });
   }
 
+  findSubmissionDetails(id: string): Promise<SubmissionWithRelations | null> {
+    return this.prisma.offerSubmission.findUnique({
+      where: { id },
+      include: {
+        ...SUBMISSION_OFFER_SELECT,
+        user: { select: { id: true, name: true, email: true } },
+      },
+    });
+  }
+
+  countSubmissionsAdmin(params: { status?: SubmissionStatus; isProduct?: boolean }): Promise<number> {
+    return this.prisma.offerSubmission.count({
+      where: {
+        ...(params.status ? { status: params.status } : {}),
+        ...(params.isProduct !== undefined ? { offer: { isProduct: params.isProduct } } : {}),
+      },
+    });
+  }
+
   createSubmission(
     data: Prisma.OfferSubmissionUncheckedCreateInput,
   ): Promise<SubmissionWithRelations> {
@@ -462,11 +481,52 @@ export class HotOffersRepository {
     take: number;
     status?: SubmissionStatus;
     isProduct?: boolean;
+    preview?: boolean;
   }): Promise<[SubmissionWithRelations[], number]> {
     const where: Prisma.OfferSubmissionWhereInput = {
       ...(params.status ? { status: params.status } : {}),
       ...(params.isProduct !== undefined ? { offer: { isProduct: params.isProduct } } : {}),
     };
+    if (params.preview) {
+      // Prisma's nested `take` fetches every matching image and trims in memory;
+      // relation counts also aggregate the entire image table. Select the page
+      // first, then use indexed, correlated image reads with a SQL LIMIT instead.
+      // Joining these tiny offer/user projections also avoids relation round trips.
+      const filters = [
+        ...(params.status ? [Prisma.sql`s."status" = ${params.status}::"SubmissionStatus"`] : []),
+        ...(params.isProduct !== undefined ? [Prisma.sql`EXISTS (
+          SELECT 1 FROM "offers" o WHERE o."id" = s."offerId" AND o."isProduct" = ${params.isProduct}
+        )`] : []),
+      ];
+      return Promise.all([
+        this.prisma.$queryRaw<SubmissionWithRelations[]>(Prisma.sql`
+          SELECT page.*,
+            json_build_object('title', o."title", 'slug', o."slug", 'thumbnailUrl', o."thumbnailUrl") AS offer,
+            json_build_object('id', u."id", 'name', u."name", 'email', u."email") AS "user",
+            COALESCE((
+              SELECT json_agg(preview) FROM (
+                SELECT i."url" FROM "submission_images" i
+                WHERE i."submissionId" = page."id"
+                ORDER BY i."createdAt" DESC, i."id" ASC
+                LIMIT 3
+              ) preview
+            ), '[]'::json) AS images,
+            json_build_object('images', (
+              SELECT COUNT(*)::integer FROM "submission_images" i WHERE i."submissionId" = page."id"
+            )) AS "_count"
+          FROM (
+            SELECT s.* FROM "offer_submissions" s
+            ${filters.length ? Prisma.sql`WHERE ${Prisma.join(filters, " AND ")}` : Prisma.empty}
+            ORDER BY s."status" ASC, s."createdAt" DESC, s."id" ASC
+            LIMIT ${params.take} OFFSET ${params.skip}
+          ) page
+          JOIN "offers" o ON o."id" = page."offerId"
+          JOIN "users" u ON u."id" = page."userId"
+          ORDER BY page."status" ASC, page."createdAt" DESC, page."id" ASC
+        `),
+        this.prisma.offerSubmission.count({ where }),
+      ]);
+    }
     return Promise.all([
       this.prisma.offerSubmission.findMany({
         where,
@@ -474,7 +534,7 @@ export class HotOffersRepository {
           ...SUBMISSION_OFFER_SELECT,
           user: { select: { id: true, name: true, email: true } },
         },
-        orderBy: [{ status: "asc" }, { createdAt: "desc" }],
+        orderBy: [{ status: "asc" }, { createdAt: "desc" }, { id: "asc" }],
         skip: params.skip,
         take: params.take,
       }),
